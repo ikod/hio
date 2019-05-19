@@ -124,7 +124,11 @@ final class Timer {
     }
     
     this(Duration d, HandlerDelegate h, string f = __FILE__, int l =  __LINE__) @safe {
-        _expires = Clock.currTime + d;
+        if ( d == Duration.max ) {
+            _expires = SysTime.max;
+        } else {
+            _expires = Clock.currTime + d;
+        }
         _handler = h;
         _id = timer_id;
         _file = f;

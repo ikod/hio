@@ -8,6 +8,7 @@ import std.experimental.logger;
 import std.typecons;
 import hio.drivers;
 import hio.events;
+import core.time;
 
 import core.sys.posix.sys.socket;
 
@@ -24,6 +25,38 @@ hlEvLoop getDefaultLoop(Mode mode = globalLoopMode) @safe nothrow {
     return _defaultLoop[mode];
 }
 
+shared static this() {
+    uninitializeLoops();
+};
+
+package void uninitializeLoops() {
+    _defaultLoop[Mode.NATIVE] = null;
+    _defaultLoop[Mode.FALLBACK] = null;
+}
+
+///
+/// disable default signal handling if you plan to handle signal in
+/// child threads
+///
+void ignoreSignal(int signum) {
+    version (linux) {
+        import core.sys.posix.signal;
+
+        sigset_t m;
+        sigemptyset(&m);
+        sigaddset(&m, signum);
+        pthread_sigmask(SIG_BLOCK, &m, null);
+    }
+    version (OSX) {
+        import core.sys.posix.signal;
+
+        sigset_t m;
+        sigemptyset(&m);
+        sigaddset(&m, signum);
+        pthread_sigmask(SIG_BLOCK, &m, null);
+    }
+}
+
 final class hlEvLoop {
     package:
         NativeEventLoopImpl           _nimpl;
@@ -31,7 +64,7 @@ final class hlEvLoop {
         string                        _name;
 
     public:
-        void delegate(scope Duration)                      run;
+        void delegate(scope Duration = Duration.max)                      run;
         @safe void delegate()                              stop;
         @safe void delegate(Timer)                         startTimer;
         @safe void delegate(Timer)                         stopTimer;
@@ -264,7 +297,7 @@ unittest {
 unittest {
     info("=== Testing signals ===");
     auto savedloglevel = globalLogLevel;
-    globalLogLevel = LogLevel.info;
+    globalLogLevel = LogLevel.trace;
     import core.sys.posix.signal;
     import core.thread;
     import core.sys.posix.unistd;
@@ -321,7 +354,7 @@ unittest {
     auto loops = [native, fallb];
     foreach(loop; loops) {
         infof("testing loop '%s'", loop.name);
-        immutable limit = 5;
+        immutable limit = 1;
         int resuests = 0;
         int responses = 0;
         hlSocket client, server;
@@ -395,16 +428,17 @@ unittest {
         loop.startTimer(new Timer(50.msecs,  (AppEvent e) @safe {
             client = new hlSocket();
             client.open();
-            client.connect("127.0.0.1:16000", loop, &client_handler, dur!"seconds"(5));
+            client.connect("127.0.0.1:16000", loop, &client_handler, 5.seconds);
         }));
 
         loop.startTimer(new Timer(100.msecs,  (AppEvent e) @safe {
             client = new hlSocket();
             client.open();
-            client.connect("127.0.0.1:16001", loop, &client_handler, dur!"seconds"(5));
+            client.connect("127.0.0.1:16001", loop, &client_handler, 5.seconds);
         }));
     
         loop.run(1.seconds);
         assert(responses == limit, "%s != %s".format(responses, limit));
+        globalLogLevel = LogLevel.info;
     }
 }

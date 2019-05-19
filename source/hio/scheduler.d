@@ -40,11 +40,11 @@ void hlSleep(Duration d) {
     if ( d <= 0.seconds) {
         return;
     }
-    Throwable throwable;
     auto tid = Fiber.getThis();
-    scope callback = delegate void (AppEvent e) @trusted
+    assert(tid !is null);
+    auto callback = delegate void (AppEvent e) @trusted
     {
-        throwable = tid.call(Fiber.Rethrow.no);
+        tid.call(Fiber.Rethrow.no);
     };
     auto t = new Timer(d, callback);
     getDefaultLoop().startTimer(t);
@@ -56,155 +56,38 @@ struct Box(T) {
         T   _data;
     }
     SocketPair          _pair;
-    shared(Throwable)   _exception;
+    Throwable   _exception;
     @disable this(this);
 }
-///
-/// spawn thread or fiber, caal function and return value
-///
-ReturnType!F callInThread(F, A...)(F f, A args) {
-    //
-    // When called inside from fiber we can and have to yield control to eventLoop
-    // when called from thread (eventLoop is not active, we can yield only to another thread)
-    // everything we can do is wait function for completion - just join cinld
-    //
-    if ( Fiber.getThis() )
-        return callFromFiber(f, args);
-    else
-        return callFromThread(f, args);
-}
 
-private ReturnType!F callFromFiber(F, A...)(F f, A args) {
-    auto tid = Fiber.getThis();
-    assert(tid, "You can call this function only inside from Task");
-
+ReturnType!F App(F, A...) (F f, A args) {
     alias R = ReturnType!F;
-    enum  Void = is(ReturnType!F==void);
-    enum  Nothrow = [__traits(getFunctionAttributes, f)].canFind("nothrow");
+    enum Void = is(ReturnType!F == void);
     Box!R box;
-    static if (!Void){
-        R   r;
+    static if (!Void)
+    {
+        R r;
     }
-
-    // create socketpair for inter-thread signalling
-    box._pair = makeSocketPair();
-    scope(exit) {
-        box._pair.close();
-    }
-
-    ///
-    /// fiber where we call function, store result of exception and stop eventloop when execution completed
-    ///
-    void _wrapper() {
-        scope(exit)
+    void _wrapper()
+    {
+        try
         {
-            getDefaultLoop().stop();
-        }
-        try {
-            static if (!Void) {
-                r = f(args);
-                box._data = r;
-            }
-            else {
-                f(args);
-            }
-        } catch(shared(Exception) e) {
-            box._exception = e;
-        }
-    }
-
-    ///
-    /// this is child thread where we start fiber and event loop
-    /// when eventLoop completed signal parent thread and exit
-    ///
-    shared void delegate() run = () {
-        //
-        // in the child thread:
-        // 1. start new fiber (task over wrapper) with user supplied function
-        // 2. start event loop forewer
-        // 3. when eventLoop done(stopped inside from wrapper) the task will finish
-        // 4. store value in box and use socketpair to send signal to caller thread
-        //
-        auto t = task(&_wrapper);
-        t.call(Fiber.Rethrow.no);
-        getDefaultLoop.run(Duration.max);
-        getDefaultLoop.deinit();
-        ubyte[1] b = [0];
-        auto s = box._pair.write(1, b);
-        assert(t.ready);
-        assert(t.state == Fiber.State.TERM);
-        assert(s == 1);
-        debug trace("child thread done");
-    };
-
-    Thread child = new Thread(run).start();
-    //
-    // in the parent
-    // add socketpair[0] to eventloop for reading and wait for data on it
-    // yieldng until we receive data on the socketpair
-    // on event handler - sop polling on pipe and join child thread
-    //
-    final class ThreadEventHandler : FileEventHandler {
-        override void eventHandler(int fd, AppEvent e) @trusted
-        {
-            //
-            // maybe we have to read here, but actually we need only info about data availability
-            // so why read?
-            //
-            debug tracef("interthread signalling - read ready");
-            getDefaultLoop().stopPoll(box._pair[0], AppEvent.IN);
-            child.join();
-            debug tracef("interthread signalling - thread joined");
-            auto throwable = tid.call(Fiber.Rethrow.no);
-        }
-    }
-
-    // enable listening on socketpair[0] and yield
-    getDefaultLoop().startPoll(box._pair[0], AppEvent.IN, new ThreadEventHandler());
-    Fiber.yield();
-
-    // child thread completed
-    if ( box._exception ) {
-        throw box._exception;
-    }
-    static if (!Void) {
-        debug tracef("joined, value = %s", box._data);
-        return box._data;
-    } else {
-        debug tracef("joined");
-    }
-}
-
-private ReturnType!F callFromThread(F, A...)(F f, A args) {
-    auto tid = Fiber.getThis();
-    assert(tid is null, "You can't call this function from Task (or fiber)");
-
-    alias R = ReturnType!F;
-    enum  Void = is(ReturnType!F==void);
-    enum  Nothrow = [__traits(getFunctionAttributes, f)].canFind("nothrow");
-    Box!R box;
-    static if (!Void){
-        R   r;
-    }
-
-    void _wrapper() {
-        scope(exit)
-        {
-            getDefaultLoop().stop();
-        }
-        try {
-            static if (!Void){
+            static if (!Void)
+            {
                 r = f(args);
                 box._data = r;
             }
             else
             {
-                //writeln("calling");
                 f(args);
             }
-        } catch (shared(Exception) e) {
+        }
+        catch (Throwable e)
+        {
+            debug tracef("app throwed %s", e);
             box._exception = e;
         }
+        getDefaultLoop().stop();
     }
 
     shared void delegate() run = () {
@@ -215,25 +98,215 @@ private ReturnType!F callFromThread(F, A...)(F f, A args) {
         // 3. when eventLoop done(stopped inside from wrapper) the task will finish
         // 4. store value in box and use socketpair to send signal to caller thread
         //
+        getDefaultLoop.deinit();
+        uninitializeLoops();
         auto t = task(&_wrapper);
-        t.call(Fiber.Rethrow.no);
+        box._exception = t.call(Fiber.Rethrow.no);
         getDefaultLoop.run(Duration.max);
         getDefaultLoop.deinit();
-        assert(t.ready);
-        assert(t.state == Fiber.State.TERM);
+        //assert(t.ready);
+        //assert(t.state == Fiber.State.TERM);
+        t.reset();
         trace("child thread done");
     };
-    Thread child = new Thread(run).start();
+    Thread child = new Thread(run);
+    child.isDaemon = true;
+    child.start();
     child.join();
-    if ( box._exception ) {
+    if (box._exception)
+    {
         throw box._exception;
     }
-    static if (!Void) {
+    static if (!Void)
+    {
         debug tracef("joined, value = %s", box._data);
         return box._data;
-    } else {
+    }
+    else
+    {
         debug tracef("joined");
     }
+}
+///
+/// spawn thread or fiber, caal function and return value
+///
+// ReturnType!F callInThread(F, A...)(F f, A args) {
+//     //
+//     // When called inside from fiber we can and have to yield control to eventLoop
+//     // when called from thread (eventLoop is not active, we can yield only to another thread)
+//     // everything we can do is wait function for completion - just join cinld
+//     //
+//     if ( Fiber.getThis() )
+//         return callFromFiber(f, args);
+//     else
+//         return callFromThread(f, args);
+// }
+
+// private ReturnType!F callFromFiber(F, A...)(F f, A args) {
+//     auto tid = Fiber.getThis();
+//     assert(tid, "You can call this function only inside from Task");
+
+//     alias R = ReturnType!F;
+//     enum  Void = is(ReturnType!F==void);
+//     enum  Nothrow = [__traits(getFunctionAttributes, f)].canFind("nothrow");
+//     Box!R box;
+//     static if (!Void){
+//         R   r;
+//     }
+
+//     // create socketpair for inter-thread signalling
+//     box._pair = makeSocketPair();
+//     scope(exit) {
+//         box._pair.close();
+//     }
+
+//     ///
+//     /// fiber where we call function, store result of exception and stop eventloop when execution completed
+//     ///
+//     void _wrapper() {
+//         scope(exit)
+//         {
+//             getDefaultLoop().stop();
+//         }
+//         try {
+//             static if (!Void) {
+//                 r = f(args);
+//                 box._data = r;
+//             }
+//             else {
+//                 f(args);
+//             }
+//         } catch(shared(Exception) e) {
+//             box._exception = e;
+//         }
+//     }
+
+//     ///
+//     /// this is child thread where we start fiber and event loop
+//     /// when eventLoop completed signal parent thread and exit
+//     ///
+//     shared void delegate() run = () {
+//         //
+//         // in the child thread:
+//         // 1. start new fiber (task over wrapper) with user supplied function
+//         // 2. start event loop forewer
+//         // 3. when eventLoop done(stopped inside from wrapper) the task will finish
+//         // 4. store value in box and use socketpair to send signal to caller thread
+//         //
+//         auto t = task(&_wrapper);
+//         t.call(Fiber.Rethrow.no);
+//         getDefaultLoop.run(Duration.max);
+//         getDefaultLoop.deinit();
+//         ubyte[1] b = [0];
+//         auto s = box._pair.write(1, b);
+//         assert(t.ready);
+//         assert(t.state == Fiber.State.TERM);
+//         assert(s == 1);
+//         debug trace("child thread done");
+//     };
+
+//     Thread child = new Thread(run).start();
+//     //
+//     // in the parent
+//     // add socketpair[0] to eventloop for reading and wait for data on it
+//     // yieldng until we receive data on the socketpair
+//     // on event handler - sop polling on pipe and join child thread
+//     //
+//     final class ThreadEventHandler : FileEventHandler {
+//         override void eventHandler(int fd, AppEvent e) @trusted
+//         {
+//             //
+//             // maybe we have to read here, but actually we need only info about data availability
+//             // so why read?
+//             //
+//             debug tracef("interthread signalling - read ready");
+//             getDefaultLoop().stopPoll(box._pair[0], AppEvent.IN);
+//             child.join();
+//             debug tracef("interthread signalling - thread joined");
+//             auto throwable = tid.call(Fiber.Rethrow.no);
+//         }
+//     }
+
+//     // enable listening on socketpair[0] and yield
+//     getDefaultLoop().startPoll(box._pair[0], AppEvent.IN, new ThreadEventHandler());
+//     Fiber.yield();
+
+//     // child thread completed
+//     if ( box._exception ) {
+//         throw box._exception;
+//     }
+//     static if (!Void) {
+//         debug tracef("joined, value = %s", box._data);
+//         return box._data;
+//     } else {
+//         debug tracef("joined");
+//     }
+// }
+
+// private ReturnType!F callFromThread(F, A...)(F f, A args) {
+//     auto tid = Fiber.getThis();
+//     assert(tid is null, "You can't call this function from Task (or fiber)");
+
+//     alias R = ReturnType!F;
+//     enum  Void = is(ReturnType!F==void);
+//     enum  Nothrow = [__traits(getFunctionAttributes, f)].canFind("nothrow");
+//     Box!R box;
+//     static if (!Void){
+//         R   r;
+//     }
+
+//     void _wrapper() {
+//         scope(exit)
+//         {
+//             getDefaultLoop().stop();
+//         }
+//         try {
+//             static if (!Void){
+//                 r = f(args);
+//                 box._data = r;
+//             }
+//             else
+//             {
+//                 //writeln("calling");
+//                 f(args);
+//             }
+//         } catch (shared(Exception) e) {
+//             box._exception = e;
+//         }
+//     }
+
+//     shared void delegate() run = () {
+//         //
+//         // in the child thread:
+//         // 1. start new fiber (task over wrapper) with user supplied function
+//         // 2. start event loop forewer
+//         // 3. when eventLoop done(stopped inside from wrapper) the task will finish
+//         // 4. store value in box and use socketpair to send signal to caller thread
+//         //
+//         auto t = task(&_wrapper);
+//         t.call(Fiber.Rethrow.no);
+//         getDefaultLoop.run(Duration.max);
+//         getDefaultLoop.deinit();
+//         assert(t.ready);
+//         assert(t.state == Fiber.State.TERM);
+//         trace("child thread done");
+//     };
+//     Thread child = new Thread(run).start();
+//     child.join();
+//     if ( box._exception ) {
+//         throw box._exception;
+//     }
+//     static if (!Void) {
+//         debug tracef("joined, value = %s", box._data);
+//         return box._data;
+//     } else {
+//         debug tracef("joined");
+//     }
+// }
+
+interface Computation {
+    bool ready();
+    bool wait(Duration t = Duration.max);
 }
 
 ///
@@ -245,8 +318,11 @@ auto spawnTask(T)(T task, Duration howLong = Duration.max) {
         Tid owner = ownerTid();
         Throwable throwable = task.call(Fiber.Rethrow.no);
         getDefaultLoop.run(howLong);
-        if ( !task.ready) {
+        scope (exit) {
             task.reset();
+            getDefaultLoop.deinit();
+        }
+        if ( !task.ready) {
             owner.send(TaskNotReady("Task not finished in requested time"));
             return;
         }
@@ -278,23 +354,23 @@ auto spawnTask(T)(T task, Duration howLong = Duration.max) {
                 errorf("Exception %s when sending exception %s", ee, e);
             }
         }
-        task.reset();
-        getDefaultLoop.deinit();
         debug tracef("task thread finished");
     };
     auto tid = spawn(run);
     return tid;
 }
 
-unittest
+version(None) unittest
 {
     globalLogLevel = LogLevel.info;
     info("test spawnTask");
     auto t0 = task(function int (){
+        getDefaultLoop().stop();
         return 41;
     });
     auto t1 = task(function int (){
         hlSleep(200.msecs);
+        getDefaultLoop().stop();
         return 42;
     });
     Tid tid = spawnTask(t0, 100.msecs);
@@ -323,8 +399,104 @@ unittest
     );
 }
 
+///
+class Threaded(F, A...) : Computation if (isCallable!F) {
+    alias start = run;
+    private {
+        alias R = ReturnType!F;
+        enum Void = is(ReturnType!F == void);
 
-class Task(F, A...) : Fiber if (isCallable!F) {
+        F       _f;
+        A       _args;
+        bool    _ready = false;
+        Thread  _child;
+        Fiber   _parent;
+        Box!R   _box;
+        Timer   _t;
+    }
+    final this(F f, A args) {
+        _f = f;
+        _args = args;
+        _box._pair = makeSocketPair();
+    }
+
+    override bool ready() {
+        return _ready;
+    }
+    override bool wait(Duration timeout = Duration.max) {
+        if (_ready) {
+            if ( _box._exception ) {
+                throw _box._exception;
+            }
+            return true;
+        }
+        if ( timeout <= 0.seconds ) {
+            // this is poll
+            return _ready;
+        }
+        if ( timeout < Duration.max ) {
+            // rize timer
+            _t = new Timer(timeout, (AppEvent e) @trusted {
+                getDefaultLoop().stopPoll(_box._pair[0], AppEvent.IN);
+                debug tracef("threaded timed out");
+                auto throwable = _parent.call(Fiber.Rethrow.no);
+            });
+            getDefaultLoop().startTimer(_t);
+        }
+        // wait on the pair
+        final class ThreadEventHandler : FileEventHandler
+        {
+            override void eventHandler(int fd, AppEvent e) @trusted
+            {
+                getDefaultLoop().stopPoll(_box._pair[0], AppEvent.IN);
+                debug tracef("threaded done");
+                if ( _t ) {
+                    getDefaultLoop.stopTimer(_t);
+                    _t = null;
+                }
+                auto throwable = _parent.call(Fiber.Rethrow.no);
+            }
+        }
+        _parent = Fiber.getThis();
+        assert(_parent, "You can call this only trom fiber");
+        debug tracef("wait - start listen on socketpair");
+        getDefaultLoop().startPoll(_box._pair[0], AppEvent.IN, new ThreadEventHandler());
+        Fiber.yield();
+        debug tracef("wait done");
+        return true;
+    }
+
+    final auto run() {
+        this._child = new Thread(
+            {
+                getDefaultLoop.deinit();
+                uninitializeLoops();
+                try {
+                    static if (!Void) {
+                        debug trace("calling");
+                        _box._data = App(_f, _args);
+                    }
+                    else {
+                        debug trace("calling");
+                        App(_f, _args);
+                    }
+                }
+                catch (Throwable e) {
+                    _box._exception = e;
+                }
+                ubyte[1] b = [0];
+                _ready = true;
+                auto s = _box._pair.write(1, b);
+                debug trace("done");
+            }
+        );
+        this._child.isDaemon = true;
+        this._child.start();
+        return this;
+    }
+}
+
+class Task(F, A...) : Fiber, Computation if (isCallable!F) {
     enum  Void = is(ReturnType!F==void);
     alias start = call;
     private {
@@ -342,50 +514,47 @@ class Task(F, A...) : Fiber if (isCallable!F) {
         }
     }
 
+    final this(F f, A args)
+    {
+        _f = f;
+        _args = args;
+        _waitor = null;
+        _exception = null;
+        super(&run);
+    }
+
     ///
     /// wait() - wait forewer
     /// wait(Duration) - wait with timeout
     /// 
-    bool wait(T...)(T args) if (T.length <= 1) {
+    override bool wait(Duration timeout = Duration.max) {
         //if ( state == Fiber.State.TERM )
         //{
         //    throw new Exception("You can't wait on finished task");
         //}
-        if ( _ready )
+        // if ( _ready )
+        // {
+        //     if ( _exception !is null ) {
+        //         throw _exception;
+        //     }
+        //     return true;
+        // }
+        if ( _ready || timeout <= 0.msecs )
         {
             if ( _exception !is null ) {
                 throw _exception;
             }
-            return true;
+            return _ready;
         }
-        static if (T.length == 1) {
-            Duration timeout = args[0];
-            if ( timeout <= 0.msecs )
-            {
-                if ( _exception !is null ) {
-                    throw _exception;
-                }
-                return _ready;
-            }
-        } else {
-            Duration timeout = 0.msecs;
-        }
-        auto current = Fiber.getThis;
-        assert(current !is null, "You can wait task only from another task or fiber");
-        this._waitor = current;
-        // if ( _done is null ) {
-        //     _done = new Notification();
-        // }
-        // auto _handler = (Notification n) @trusted {
-        //     current.call();
-        // };
-        // _done.subscribe(_handler);
+        assert(this._waitor is null, "You can't wait twice");
+        this._waitor = Fiber.getThis();
+        assert(_waitor !is null, "You can wait task only from another task or fiber");
         Timer t;
         if ( timeout > 0.msecs ) {
             t = new Timer(timeout, (AppEvent e) @trusted {
-                // _done.unsubscribe(_handler);
-                this._waitor = null;
-                current.call();
+                auto w = _waitor;
+                _waitor = null;
+                w.call(Fiber.Rethrow.no);
             });
             getDefaultLoop().startTimer(t);
         }
@@ -409,9 +578,7 @@ class Task(F, A...) : Fiber if (isCallable!F) {
         }
     }
 
-    @property
-    final bool ready() const {
-        pragma(inline, true)
+    override bool ready() const {
         return _ready;
     }
     static if (!Void) {
@@ -421,42 +588,29 @@ class Task(F, A...) : Fiber if (isCallable!F) {
             return _result;
         }
     }
-    final this(F f, A args) {
-        _f = f;
-        _args = args;
-        super(&run);
-    }
     private final void run() {
-        scope(exit)
-        {
-            _ready = true;
-            // here we call() all suspended fibers
-            // current fiber will terminate only when we return from all these calls
-            // if ( _done !is null ) {
-            //     getDefaultLoop().postNotification(_done, Yes.broadcast);
-            // }
-        }
         static if ( Void )
         {
             try {
                 _f(_args);
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 _exception = e;
             }
-            debug tracef("run void finished, waitors: %s", this._waitor);
+            //debug tracef("run void finished, waitors: %s", this._waitor);
         }
         else 
         {
             try {
                 _result = _f(_args);
-            } catch(Exception e) {
+            } catch(Throwable e) {
                 _exception = e;
             }
-            debug tracef("run finished, result: %s, waitor: %s", _result, this._waitor);
+            //debug tracef("run finished, result: %s, waitor: %s", _result, this._waitor);
         }
         this._ready = true;
         if ( this._waitor ) {
             auto w = this._waitor;
+            this._waitor = null;
             w.call();
         }
     }
@@ -464,6 +618,10 @@ class Task(F, A...) : Fiber if (isCallable!F) {
 
 auto task(F, A...)(F f, A a) {
     return new Task!(F,A)(f, a);
+}
+
+auto threaded(F, A...)(F f, A a) {
+    return new Threaded!(F, A)(f, a);
 }
 
 unittest {
@@ -474,57 +632,97 @@ unittest {
     }
     auto t = task(&f, 1);
     t.call();
+    assert(t.result == 1);
     assert(i==1, "i=%d, expected 1".format(i));
     assert(t.result == 1, "result: %d, expected 1".format(t.result));
 }
 
 unittest {
-    //
-    // two tasks and spawned thread under event loop
-    //
-    globalLogLevel = LogLevel.info;
-    auto mode = globalLoopMode;
-    foreach(m; [Mode.FALLBACK, Mode.NATIVE]) {
-        globalLoopMode = m;
-    
-        int counter1 = 10;
-        int counter2 = 20;
-        int f0() {
-            hlSleep(1.seconds);
-            return 1;
+    auto v = App(function int() {
+        Duration f(Duration t)
+        {
+            hlSleep(t);
+            return t;
         }
-        void f1() {
-            while(--counter1 > 0) {
-                hlSleep(100.msecs);
-            }
-        }
-        void f2() {
-            while(--counter2 > 0) {
-                hlSleep(50.msecs);
-            }
-        }
-        void f3() {
-            auto t1 = task(&f1);
-            auto t2 = task(&f2);
-            t1.start();
-            t2.start();
-            auto v = callInThread(&f0);
-            //
-            // t1 and t2 job must be done at this time
-            //
-            assert(counter1 == 0);
-            assert(counter2 == 0);
-            t1.wait();
-            t2.wait();
-            getDefaultLoop().stop();
-        }
-        auto t3 = task(&f3);
-        t3.start();
-        getDefaultLoop().run(3.seconds);
-        infof("test0 ok in %s mode", m);
-    }
-    globalLoopMode = mode;
+
+        auto t100 = task(&f, 100.msecs);
+        auto t200 = task(&f, 200.msecs);
+        t100.start;
+        t200.start;
+        t100.wait();
+        return 1;
+    });
+    assert(v == 1);
 }
+
+unittest
+{
+    globalLogLevel = LogLevel.info;
+    auto v = App(function int() {
+        Duration f(Duration t)
+        {
+            hlSleep(t);
+            return t;
+        }
+
+        auto t100 = threaded(&f, 100.msecs).start;
+        auto t200 = threaded(&f, 200.msecs).start;
+        t200.wait(100.msecs);
+        assert(!t200.ready);
+        t100.wait(300.msecs);
+        assert(t100.ready);
+        return 1;
+    });
+    assert(v == 1);
+}
+
+// unittest {
+//     //
+//     // two tasks and spawned thread under event loop
+//     //
+//     globalLogLevel = LogLevel.info;
+//     auto mode = globalLoopMode;
+//     foreach(m; [Mode.FALLBACK, Mode.NATIVE]) {
+//         globalLoopMode = m;
+    
+//         int counter1 = 10;
+//         int counter2 = 20;
+//         int f0() {
+//             hlSleep(1.seconds);
+//             return 1;
+//         }
+//         void f1() {
+//             while(--counter1 > 0) {
+//                 hlSleep(100.msecs);
+//             }
+//         }
+//         void f2() {
+//             while(--counter2 > 0) {
+//                 hlSleep(50.msecs);
+//             }
+//         }
+//         void f3() {
+//             auto t1 = task(&f1);
+//             auto t2 = task(&f2);
+//             t1.start();
+//             t2.start();
+//             auto v = callInThread(&f0);
+//             //
+//             // t1 and t2 job must be done at this time
+//             //
+//             assert(counter1 == 0);
+//             assert(counter2 == 0);
+//             t1.wait();
+//             t2.wait();
+//             getDefaultLoop().stop();
+//         }
+//         auto t3 = task(&f3);
+//         t3.start();
+//         getDefaultLoop().run(1.seconds);
+//         infof("test0 ok in %s mode", m);
+//     }
+//     globalLoopMode = mode;
+// }
 
 unittest {
     //
@@ -540,7 +738,7 @@ unittest {
         int f() {
             return 1;
         }
-        auto v = callInThread(&f);
+        auto v = App(&f);
         assert(v == 1, "expected v==1, but received v=%d".format(v));
         infof("test1 ok in %s mode", m);
     }
@@ -558,7 +756,7 @@ unittest {
             hlSleep(200.msecs);
             return 2;
         }
-        auto v = callInThread(&f);
+        auto v = App(&f);
         assert(v == 2, "expected v==2, but received v=%d".format(v));
         infof("test2 ok in %s mode", m);
     }
@@ -585,7 +783,7 @@ unittest {
             hlSleep(200.msecs);
             throw new TestException("test exception");
         }
-        assertThrown!TestException(callInThread(&f));
+        assertThrown!TestException(App(&f));
         infof("test3a ok in %s mode", m);
     }
     globalLoopMode = mode;
@@ -611,7 +809,7 @@ unittest {
             t.wait(300.msecs);
             return 0;
         }
-        assertThrown!TestException(callInThread(&f));
+        assertThrown!TestException(App(&f));
         infof("test3b ok in %s mode", m);
     }
 }
@@ -637,7 +835,7 @@ unittest {
             t.wait();
             return t.result;
         }
-        auto r = callInThread(&f);
+        auto r = App(&f);
         assert(r == 4, "spawnTask returned %d, expected 4".format(r));
         infof("test4 ok in %s mode", m);
     }
@@ -657,7 +855,7 @@ unittest {
         void f() {
             hlSleep(200.msecs);
         }
-        callInThread(&f);
+        App(&f);
         infof("test6 ok in %s mode", m);
     }
 }
@@ -679,16 +877,17 @@ unittest {
             return 6;
         }
         int f() {
-            auto v = callInThread(&f0);
+            auto v = App(&f0);
             tracef("got value %s", v);
             return v+1;
         }
-        auto r = callInThread(&f);
+        auto r = App(&f);
         assert(r == 7, "spawnTask returned %d, expected 7".format(r));
         infof("test7 ok in %s mode", m);
     }
 }
 
+////////
 
 // unittest {
 //     info("=== test wait task ===");

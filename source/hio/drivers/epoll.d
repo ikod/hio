@@ -44,7 +44,6 @@ struct NativeEventLoopImpl {
         Signal[][int]           signals;
         //FileHandlerFunction[int] fileHandlers;
         FileEventHandler[]      fileHandlers;
-        CircBuff!NotificationDelivery   notificationsQueue;
 
     }
     @disable this(this) {}
@@ -102,15 +101,15 @@ struct NativeEventLoopImpl {
             //
             // handle user events(notifications)
             //
-            auto counter = notificationsQueue.Size * 10;
-            while(!notificationsQueue.empty){
-                auto nd = notificationsQueue.get();
-                Notification n = nd._n;
-                Broadcast b = nd._broadcast;
-                n.handler(b);
-                counter--;
-                enforce(counter > 0, "Can't clear notificatioinsQueue");
-            }
+            // auto counter = notificationsQueue.Size * 10;
+            // while(!notificationsQueue.empty){
+            //     auto nd = notificationsQueue.get();
+            //     Notification n = nd._n;
+            //     Broadcast b = nd._broadcast;
+            //     n.handler(b);
+            //     counter--;
+            //     enforce(counter > 0, "Can't clear notificatioinsQueue");
+            // }
             //auto counter = notificationsQueue.Size * 10;
             //while(!notificationsQueue.empty){
             //    auto n = notificationsQueue.get();
@@ -156,9 +155,9 @@ struct NativeEventLoopImpl {
                 int fd = e.data.fd;
 
                 if ( fd == timer_fd ) {
-                    // with EPOLLET flag I dont have to read from timerfd, otherwise I ahve to:
+                    // with EPOLLET flag I dont have to read from timerfd, otherwise I have to:
                     // ubyte[8] v;
-                    // read(timer_fd, &v[0], 8);
+                    // auto tfdr = read(timer_fd, &v[0], 8);
                     debug tracef("timer event");
                     auto now = Clock.currTime;
                     /*
@@ -175,6 +174,9 @@ struct NativeEventLoopImpl {
                         Timer t = timers.front;
                         HandlerDelegate h = t._handler;
                         timers.removeFront;
+                        if (timers.empty) {
+                            _del_kernel_timer();
+                        }
                         try {
                             h(AppEvent.TMO);
                         } catch (Exception e) {
@@ -189,7 +191,7 @@ struct NativeEventLoopImpl {
                         _mod_kernel_timer(timers.front, kernel_delta);
                     } else {
                         // delete kernel timer so we can add it next time
-                        _del_kernel_timer();
+                        //_del_kernel_timer();
                     }
                     continue;
                 }
@@ -233,7 +235,7 @@ struct NativeEventLoopImpl {
                 try {
                     fileHandlers[fd].eventHandler(e.data.fd, ae);
                 } catch (Exception e) {
-                    errorf("On file handler: %s", e);
+                    errorf("On file handler: %d, %s", fd, e);
                 }
                 //HandlerDelegate h = cast(HandlerDelegate)e.data.ptr;
                 //AppEvent appEvent = AppEvent(sysEventToAppEvent(e.events), -1);
@@ -250,6 +252,9 @@ struct NativeEventLoopImpl {
                 overdue ~= t;
                 return;
             }
+            debug {
+                tracef("timers: %s", timers);
+            }
             if ( timers.empty ) {
                 _add_kernel_timer(t, d);
             } else {
@@ -263,6 +268,7 @@ struct NativeEventLoopImpl {
         debug tracef("remove timer %s", t);
 
         if ( t !is timers.front ) {
+            debug tracef("Non front timer: %s", timers);
             auto r = timers.equalRange(t);
             timers.remove(r);
             return;
@@ -273,12 +279,14 @@ struct NativeEventLoopImpl {
         if ( !timers.empty ) {
             // we can change kernel timer to next,
             // If next timer expired - set delta = 0 to run on next loop invocation
+            debug trace("set up next timer");
             auto next = timers.front;
             auto d = next._expires - Clock.currTime;
             d = max(d, 0.seconds);
             _mod_kernel_timer(timers.front, d);
             return;
         }
+        debug trace("remove last timer");
         _del_kernel_timer();
     }
 
@@ -323,33 +331,33 @@ struct NativeEventLoopImpl {
     //
     // notifications
     //
-    pragma(inline)
-    void processNotification(Notification ue, Broadcast broadcast) @safe {
-        ue.handler(broadcast);
-    }
-    void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
-        debug trace("posting notification");
-        if ( !notificationsQueue.full )
-        {
-            debug trace("put notification");
-            notificationsQueue.put(NotificationDelivery(notification, broadcast));
-            debug trace("put notification done");
-            return;
-        }
-        // now try to find space for next notification
-        auto retries = 10 * notificationsQueue.Size;
-        while(notificationsQueue.full && retries > 0)
-        {
-            retries--;
-            auto nd = notificationsQueue.get();
-            Notification _n = nd._n;
-            Broadcast _b = nd._broadcast;
-            processNotification(_n, _b);
-        }
-        enforce(!notificationsQueue.full, "Can't clear space for next notification in notificatioinsQueue");
-        notificationsQueue.put(NotificationDelivery(notification, broadcast));
-        debug trace("posting notification - done");
-    }
+    // pragma(inline)
+    // void processNotification(Notification ue, Broadcast broadcast) @safe {
+    //     ue.handler(broadcast);
+    // }
+    // void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
+    //     debug trace("posting notification");
+    //     if ( !notificationsQueue.full )
+    //     {
+    //         debug trace("put notification");
+    //         notificationsQueue.put(NotificationDelivery(notification, broadcast));
+    //         debug trace("put notification done");
+    //         return;
+    //     }
+    //     // now try to find space for next notification
+    //     auto retries = 10 * notificationsQueue.Size;
+    //     while(notificationsQueue.full && retries > 0)
+    //     {
+    //         retries--;
+    //         auto nd = notificationsQueue.get();
+    //         Notification _n = nd._n;
+    //         Broadcast _b = nd._broadcast;
+    //         processNotification(_n, _b);
+    //     }
+    //     enforce(!notificationsQueue.full, "Can't clear space for next notification in notificatioinsQueue");
+    //     notificationsQueue.put(NotificationDelivery(notification, broadcast));
+    //     debug trace("posting notification - done");
+    // }
 
 
     //void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
@@ -413,11 +421,12 @@ struct NativeEventLoopImpl {
         sigset_t m;
         sigemptyset(&m);
         sigaddset(&m, s._signum);
-        sigprocmask(SIG_BLOCK, &m, null);
+        pthread_sigmask(SIG_BLOCK, &m, null);
 
         sigaddset(&mask, s._signum);
         if ( signal_fd == -1 ) {
             signal_fd = signalfd(-1, &mask, SFD_NONBLOCK|SFD_CLOEXEC);
+            debug tracef("signalfd %d", signal_fd);
             epoll_event e;
             e.events = EPOLLIN|EPOLLET;
             e.data.fd = signal_fd;
@@ -433,7 +442,7 @@ struct NativeEventLoopImpl {
         sigset_t m;
         sigemptyset(&m);
         sigaddset(&m, s._signum);
-        sigprocmask(SIG_UNBLOCK, &m, null);
+        pthread_sigmask(SIG_UNBLOCK, &m, null);
         sigdelset(&mask, s._signum);
         assert(signal_fd != -1);
         signalfd(signal_fd, &mask, 0);
@@ -469,7 +478,7 @@ struct NativeEventLoopImpl {
         e.events = appEventToSysEvent(ev);
         e.data.fd = fd;
         auto rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &e);
-        enforce(rc >= 0, "epoll_ctl add(%s): %s".format(e, fromStringz(strerror(errno))));
+        enforce(rc >= 0, "epoll_ctl add(%d, %s): %s".format(fd, e, fromStringz(strerror(errno))));
         fileHandlers[fd] = f;
     }
 

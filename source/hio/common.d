@@ -33,9 +33,17 @@ SocketPair makeSocketPair() @safe {
 
 struct SocketPair {
     int[2]  _pair = [-1, -1];
+    ~this() @safe {
+        (() @trusted => close())();
+    }
     public void close() {
-        core.sys.posix.unistd.close(_pair[0]);
-        core.sys.posix.unistd.close(_pair[1]);
+        if ( _pair[0] >= 0 ) {
+            core.sys.posix.unistd.close(_pair[0]);
+        }
+        if ( _pair[1] >= 0 ) {
+            core.sys.posix.unistd.close(_pair[1]);
+        }
+        _pair = [-1, -1];
     }
     auto opIndex(size_t i) const {
         return _pair[i];
@@ -55,6 +63,7 @@ struct SocketPair {
         return (() @trusted => core.sys.posix.unistd.write(_pair[i], b.ptr, b.length))();
     }
 }
+
 
 //class NotificationChannel {
 //    import  containers;
