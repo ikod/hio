@@ -97,6 +97,7 @@ struct NativeEventLoopImpl {
         }
 
         while( !stopped ) {
+            debug tracef("event loop iteration");
 
             //
             // handle user events(notifications)
@@ -232,10 +233,13 @@ struct NativeEventLoopImpl {
                     ae |= AppEvent.OUT;
                 }
                 debug tracef("process event %02x on fd: %s, handler: %s", e.events, e.data.fd, fileHandlers[fd]);
-                try {
-                    fileHandlers[fd].eventHandler(e.data.fd, ae);
-                } catch (Exception e) {
-                    errorf("On file handler: %d, %s", fd, e);
+                if ( fileHandlers[fd] !is null ) {
+                    try {
+                        fileHandlers[fd].eventHandler(e.data.fd, ae);
+                    }
+                    catch (Exception e) {
+                        errorf("On file handler: %d, %s", fd, e);
+                    }
                 }
                 //HandlerDelegate h = cast(HandlerDelegate)e.data.ptr;
                 //AppEvent appEvent = AppEvent(sysEventToAppEvent(e.events), -1);

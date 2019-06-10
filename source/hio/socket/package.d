@@ -96,6 +96,7 @@ class hlSocket : FileEventHandler {
         AppEvent             _pollingFor = AppEvent.NONE;
         ubyte[]              _input;
         bool                 _connected;
+        uint                 _accepts_in_a_row = 10;
     }
 
     this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l =  __LINE__) @safe {
@@ -106,7 +107,7 @@ class hlSocket : FileEventHandler {
         _line = l;
     }
 
-    this( int s, ubyte af = AF_INET, int sock_type = 0, string f = __FILE__, int l =  __LINE__) @safe
+    this(int s, ubyte af = AF_INET, int sock_type = 0, string f = __FILE__, int l =  __LINE__) @safe
     in {assert(s>=0);}
     body {
         _af = af;
@@ -164,6 +165,7 @@ class hlSocket : FileEventHandler {
             _errno = ETIMEDOUT;
             _polling = AppEvent.NONE;
             _loop.stopPoll(_fileno, AppEvent.OUT);
+            _loop.detach(_fileno);
             _state = State.IDLE;
             _callback(e);
             return;
@@ -208,8 +210,7 @@ class hlSocket : FileEventHandler {
             //_handler(e);
         case State.ACCEPTING:
             assert(e == AppEvent.IN, "We can handle only IN event in accepting state");
-            enum ACCEPTS_IN_A_ROW = 10;
-            foreach(_; 0..ACCEPTS_IN_A_ROW) {
+            foreach(_; 0.._accepts_in_a_row) {
                 if ( _fileno == -1 ) {
                     break; // socket can be closed in handler
                 }
@@ -245,6 +246,7 @@ class hlSocket : FileEventHandler {
                 //fd2so[new_s] = ns;
                 //_accept_callback(ns);
                 _accept_callback(new_s);
+                debug tracef("accept_callback for fd: %d - done", new_s);
             }
             //_handler(e);
             return;
@@ -281,7 +283,7 @@ class hlSocket : FileEventHandler {
 
     public void close() @safe {
         if ( _fileno != -1 ) {
-            debug tracef("closing %d", _fileno);
+            debug tracef("closing %d, polling: %x", _fileno, _polling);
             if ( _loop && _polling != AppEvent.NONE ) {
                 debug tracef("detach from polling for %s", appeventToString(_polling));
                 _loop.stopPoll(_fileno, _polling);
@@ -341,7 +343,10 @@ class hlSocket : FileEventHandler {
         loop.stopPoll(_fileno, _polling);
     }
 
-    public void connect(string addr, hlEvLoop loop, HandlerDelegate f, Duration timeout) @safe {
+    ///
+    /// Return true if connect delayed
+    ///
+    public bool connect(string addr, hlEvLoop loop, HandlerDelegate f, Duration timeout) @safe {
         assert(timeout > 0.seconds);
         switch (_af) {
             case AF_INET:
@@ -356,9 +361,11 @@ class hlSocket : FileEventHandler {
                     uint sa_len = sin.sizeof;
                     auto rc = (() @trusted => .connect(_fileno, cast(sockaddr*)&sin, sa_len))();
                     if ( rc == -1 && errno() != EINPROGRESS ) {
-                        debug tracef("connect errno: %s", s_strerror(errno()));
-                        f(AppEvent.ERR);
-                        return;
+                        debug infof("connect errno: %s", s_strerror(errno()));
+                        _connected = false;
+                        _state = State.IDLE;
+                        f(AppEvent.ERR|AppEvent.IMMED);
+                        return false;
                     }
                     _loop = loop;
                     _state = State.CONNECTING;
@@ -372,16 +379,17 @@ class hlSocket : FileEventHandler {
         }
         _connect_timer = new Timer(timeout, &timeoutHandler);
         _loop.startTimer(_connect_timer);
+        return true;
     }
 
     public void accept(T)(hlEvLoop loop, T f) {
         _loop = loop;
         _accept_callback = f;
-        if ( _state != State.ACCEPTING ) {
+//        if ( _state != State.ACCEPTING ) {
             _state = State.ACCEPTING;
             _polling |= AppEvent.IN;
             loop.startPoll(_fileno, AppEvent.IN, this);
-        }
+//        }
     }
 
     void io_handler(AppEvent ev) @safe {
@@ -497,6 +505,11 @@ class hlSocket : FileEventHandler {
         _pollingFor = ev;
         assert(_pollingFor != AppEvent.NONE);
 
+        if (_io_timer) {
+            debug tracef("closing prev timer: %s", _io_timer);
+            _loop.stopTimer(_io_timer);
+        }
+
         _loop = loop;
         _iorq = iorq;
         _state = State.IO;
@@ -568,16 +581,22 @@ class hlSocket : FileEventHandler {
 
 
 private auto str2inetaddr(string addr) @safe pure {
-    auto s = addr.split(":");
-    if ( s.length != 2 ) {
+    auto pos = indexOf(addr, ':');
+    if ( pos == -1 ) {
         throw new Exception("incorrect addr %s, expect host:port", addr);
     }
-    auto host = s[0].split(".");
+    auto host = addr[0..pos].split('.');
+    auto port = addr[pos+1..$];
+    // auto s = addr.split(":");
+    // if ( s.length != 2 ) {
+    //     throw new Exception("incorrect addr %s, expect host:port", addr);
+    // }
+    // host = s[0].split(".");
     if ( host.length != 4 ) {
         throw new Exception("addr must be in form a.b.c.d:p");
     }
     uint   a = to!ubyte(host[0]) << 24 | to!ubyte(host[1]) << 16 | to!ubyte(host[2]) << 8 | to!ubyte(host[3]);
-    ushort p = to!ushort(s[1]);
+    ushort p = to!ushort(port);
     return tuple(core.sys.posix.arpa.inet.htonl(a), core.sys.posix.arpa.inet.htons(p));
 }
 
@@ -650,11 +669,15 @@ class HioSocket
         hlSocket _socket;
         Fiber    _fiber;
     }
-    this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__)
-    {
-        _socket = new hlSocket(af, sock_type,f,l);
+    this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) {
+        _socket = new hlSocket(af, sock_type, f, l);
         _socket.open();
     }
+
+    this(int fileno, ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) {
+        _socket = new hlSocket(fileno, af, sock_type, f, l);
+    }
+
     ~this() {
         // if ( _socket ) {
         //     _socket.close();
@@ -676,9 +699,16 @@ class HioSocket
     };
     void connect(string addr, Duration timeout){
         auto loop = getDefaultLoop();
-        _socket.connect(addr, loop, &handler, timeout);
         _fiber = Fiber.getThis();
-        Fiber.yield();
+        void callback(AppEvent e) {
+            if ( !(e & AppEvent.IMMED) ) {
+                (() @trusted { _fiber.call(); })();
+            }
+        }
+        if ( _socket.connect(addr, loop, &callback, timeout) ) {
+            Fiber.yield();
+        }
+        infof("Connect state: %s", _socket.connected);
     }
     bool connected() {
         return _socket.connected;
@@ -697,16 +727,66 @@ class HioSocket
     }
     auto accept() {
         HioSocket s;
+
         auto loop = getDefaultLoop();
         _fiber = Fiber.getThis();
+
         void callback(int fileno) @trusted {
-            assert(fileno>=0);
-            s = new HioSocket();
-            s._socket = new hlSocket(fileno);
+            assert(fileno >= 0);
+            debug tracef("got accept callback for socket %d", fileno);
+            if ( _socket._polling & AppEvent.IN ) {
+                getDefaultLoop.stopPoll(_socket.fileno, AppEvent.IN);
+                _socket._polling &= ~AppEvent.IN;
+            }
+            _socket._state = hlSocket.State.IDLE;
+            s = new HioSocket(fileno);
             _fiber.call();
         }
+        _socket._accepts_in_a_row = 1;
         _socket.accept(loop, &callback);
         Fiber.yield();
         return s;
+    }
+
+    IOResult recv(size_t n, Duration timeout = 10.seconds) {
+        IORequest ioreq;
+        IOResult  iores;
+
+        _fiber = Fiber.getThis();
+        void callback(IOResult ior) @trusted {
+            debug tracef("got ior on recv: %s", ior);
+            iores = ior;
+            _fiber.call();
+        }
+
+        ioreq.to_read = n;
+        ioreq.callback = &callback;
+        _socket.io(getDefaultLoop(), ioreq, timeout);
+        debug tracef("recv yielding on %s", _socket);
+        Fiber.yield();
+        debug tracef("recv done on %s", _socket);
+        return iores;
+    }
+
+    size_t send(immutable (ubyte)[] data, Duration timeout = 1.seconds) {
+        _fiber = Fiber.getThis();
+        IOResult ioresult;
+
+        void callback(IOResult ior) @trusted {
+            ioresult = ior;
+            _fiber.call();
+        }
+        ioresult = _socket.send(getDefaultLoop(), data, timeout, &callback);
+        if ( ioresult.error ) {
+            return -1;
+        }
+        if ( ioresult.output.empty ) {
+            return data.length;
+        }
+        Fiber.yield();
+        if (ioresult.error) {
+            return -1;
+        }
+        return data.length - ioresult.output.length;
     }
 }

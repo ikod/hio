@@ -21,6 +21,7 @@ enum AppEvent : int {
     HUP  = 0x10,
     TMO  = 0x20,
     USER = 0x40,
+    IMMED= 0x80,
     ALL  = 0x7f
 }
 private immutable string[int] _names;

@@ -595,6 +595,7 @@ class Task(F, A...) : Fiber, Computation if (isCallable!F) {
                 _f(_args);
             } catch (Throwable e) {
                 _exception = e;
+                debug tracef("got throwable %s", e);
             }
             //debug tracef("run void finished, waitors: %s", this._waitor);
         }
@@ -604,6 +605,7 @@ class Task(F, A...) : Fiber, Computation if (isCallable!F) {
                 _result = _f(_args);
             } catch(Throwable e) {
                 _exception = e;
+                debug tracef("got throwable %s", e);
             }
             //debug tracef("run finished, result: %s, waitor: %s", _result, this._waitor);
         }
