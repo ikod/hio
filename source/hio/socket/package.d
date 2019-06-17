@@ -6,6 +6,7 @@ import std.conv;
 import std.traits;
 import std.datetime;
 import std.exception;
+import std.algorithm;
 
 import std.algorithm.comparison: min;
 
@@ -19,6 +20,8 @@ import std.experimental.allocator.building_blocks;
 
 //static import std.socket;
 
+import std.socket;
+
 import core.sys.posix.sys.socket;
 import core.sys.posix.unistd;
 import core.sys.posix.arpa.inet;
@@ -30,7 +33,7 @@ import core.sys.posix.fcntl;
 import core.stdc.string;
 import core.stdc.errno;
 
-import hio.events;
+public import hio.events;
 import hio.common;
 //import nbuff;
 
@@ -382,6 +385,36 @@ class hlSocket : FileEventHandler {
         return true;
     }
 
+    public bool connect(Address addr, hlEvLoop loop, HandlerDelegate f, Duration timeout) @safe {
+        assert(timeout > 0.seconds);
+        switch (_af) {
+        case AF_INET: {
+                import core.sys.posix.netinet.in_;
+                sockaddr_in *sin = cast(sockaddr_in*)(addr.name);
+                uint sa_len = sockaddr.sizeof;
+                auto rc = (() @trusted => .connect(_fileno, cast(sockaddr*)sin, sa_len))();
+                if (rc == -1 && errno() != EINPROGRESS) {
+                    debug infof("connect errno: %s", s_strerror(errno()));
+                    _connected = false;
+                    _state = State.IDLE;
+                    f(AppEvent.ERR | AppEvent.IMMED);
+                    return false;
+                }
+                _loop = loop;
+                _state = State.CONNECTING;
+                _callback = f;
+                _polling |= AppEvent.OUT;
+                loop.startPoll(_fileno, AppEvent.OUT, this);
+            }
+            break;
+        default:
+            throw new SocketException("unsupported address family");
+        }
+        _connect_timer = new Timer(timeout, &timeoutHandler);
+        _loop.startTimer(_connect_timer);
+        return true;
+    }
+
     public void accept(T)(hlEvLoop loop, T f) {
         _loop = loop;
         _accept_callback = f;
@@ -411,8 +444,9 @@ class hlSocket : FileEventHandler {
         }
         if ( ev & AppEvent.IN )
         {
-            ubyte[] b = new ubyte[](min(_buffer_size, _iorq.to_read));
-            auto rc = (() @trusted => recv(_fileno, &b[0], _buffer_size, 0))();
+            size_t _will_read = min(_buffer_size, _iorq.to_read);
+            ubyte[] b = new ubyte[_will_read];
+            auto rc = (() @trusted => recv(_fileno, &b[0], _will_read, 0))();
             debug tracef("recv on fd %d returned %d", _fileno, rc);
             if ( rc < 0 )
             {
@@ -430,10 +464,12 @@ class hlSocket : FileEventHandler {
             }
             if ( rc > 0 )
             {
-                debug tracef("adding data %s", b[0..rc]);
-                _input ~= b[0..rc];
+                b.length = rc;
+                debug tracef("adding data %s", b);
+                _input ~= b;
                 b = null;
                 _iorq.to_read -= rc;
+                debug tracef("after adding data %s, %s", _iorq.to_read, _iorq.allowPartialInput);
                 if ( _iorq.to_read == 0 || _iorq.allowPartialInput ) {
                     _loop.stopPoll(_fileno, _pollingFor);
                     _polling = AppEvent.NONE;
@@ -665,6 +701,50 @@ class HioSocket
 {
     import core.thread;
 
+    struct InputStream {
+        private {
+            size_t      _buffer_size = 16*1024;
+            Duration    _timeout = 1.seconds;
+            HioSocket   _socket;
+            bool        _started;
+            bool        _done;
+            immutable(ubyte)[]     _data;
+        }
+        this(HioSocket s, Duration t = 10.seconds) {
+            _socket = s;
+            _timeout = t;
+            _buffer_size = s._socket._buffer_size;
+        }
+        bool empty() {
+            return _started && _done;
+        }
+        auto front() {
+            if ( _done ) {
+                _data.length = 0;
+                return _data;
+            }
+            if (!_started ) {
+                _started = true;
+                auto r = _socket.recv(_buffer_size, _timeout);
+                if (r.timedout || r.error || r.input.length == 0) {
+                    _done = true;
+                } else {
+                    _data = r.input;
+                }
+            }
+            debug tracef("InputStream front: %s", _data);
+            return _data;
+        }
+        void popFront() {
+            auto r = _socket.recv(_buffer_size, _timeout);
+            if (r.timedout || r.error || r.input.length == 0) {
+                _done = true;
+            }
+            else {
+                _data = r.input;
+            }
+        }
+    }
     private {
         hlSocket _socket;
         Fiber    _fiber;
@@ -697,6 +777,19 @@ class HioSocket
         }
         (()@trusted{_fiber.call();})();
     };
+    void connect(Address addr, Duration timeout) {
+        auto loop = getDefaultLoop();
+        _fiber = Fiber.getThis();
+        void callback(AppEvent e) {
+            if (!(e & AppEvent.IMMED)) {
+                (() @trusted { _fiber.call(); })();
+            }
+        }
+
+        if (_socket.connect(addr, loop, &callback, timeout)) {
+            Fiber.yield();
+        }
+    }
     void connect(string addr, Duration timeout){
         auto loop = getDefaultLoop();
         _fiber = Fiber.getThis();
@@ -708,7 +801,6 @@ class HioSocket
         if ( _socket.connect(addr, loop, &callback, timeout) ) {
             Fiber.yield();
         }
-        infof("Connect state: %s", _socket.connected);
     }
     bool connected() {
         return _socket.connected;
@@ -789,4 +881,70 @@ class HioSocket
         }
         return data.length - ioresult.output.length;
     }
+    InputStream inputStream(Duration t=10.seconds) {
+        return InputStream(this, t);
+    }
+}
+
+struct ByLineSplitter(R) {
+    R source;
+    ubyte[] data;
+    bool started;
+
+    this(R r) {
+        source = r;
+    }
+
+    private void fill() {
+        if (started) {
+            source.popFront;
+        }
+        while (!source.empty) {
+            data ~= source.front;
+            if (data.countUntil('\n') >= 0) {
+                break;
+            }
+            source.popFront;
+        }
+    }
+
+    bool empty() {
+        return source.empty && data.length == 0;
+    }
+
+    string front() {
+
+        auto i = countUntil(data, '\n');
+        if (data.length == 0 || i < 0) {
+            fill();
+            i = countUntil(data, '\n');
+        }
+        started = true;
+        ubyte[] r;
+        if (i >= 0) {
+            r = data[0 .. i + 1];
+        }
+        else {
+            r = data;
+        }
+        return assumeUTF(r);
+    }
+
+    void popFront() {
+        auto i = countUntil(data, '\n');
+        if (i >= 0) {
+            data = data[i + 1 .. $];
+            return;
+        }
+        if (data.length == 0) {
+            return;
+        }
+        errorf("Missed new line on <%s>", assumeUTF(data));
+        assert(0, "Missed new line on <%s>".format(data));
+    }
+
+}
+
+auto byLineSplitter(R)(R r) {
+    return ByLineSplitter!R(r);
 }

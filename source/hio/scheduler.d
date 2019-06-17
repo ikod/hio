@@ -101,13 +101,13 @@ ReturnType!F App(F, A...) (F f, A args) {
         getDefaultLoop.deinit();
         uninitializeLoops();
         auto t = task(&_wrapper);
-        box._exception = t.call(Fiber.Rethrow.no);
+        box._exception = t.start(Fiber.Rethrow.no);
         getDefaultLoop.run(Duration.max);
         getDefaultLoop.deinit();
+        uninitializeLoops();
         //assert(t.ready);
         //assert(t.state == Fiber.State.TERM);
         t.reset();
-        trace("child thread done");
     };
     Thread child = new Thread(run);
     child.isDaemon = true;
@@ -448,6 +448,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         {
             override void eventHandler(int fd, AppEvent e) @trusted
             {
+                _box._pair.read(0, 1);
                 getDefaultLoop().stopPoll(_box._pair[0], AppEvent.IN);
                 debug tracef("threaded done");
                 if ( _t ) {
@@ -460,6 +461,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         _parent = Fiber.getThis();
         assert(_parent, "You can call this only trom fiber");
         debug tracef("wait - start listen on socketpair");
+        //auto eh = new ThreadEventHandler();
         getDefaultLoop().startPoll(_box._pair[0], AppEvent.IN, new ThreadEventHandler());
         Fiber.yield();
         debug tracef("wait done");
@@ -487,7 +489,6 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 ubyte[1] b = [0];
                 _ready = true;
                 auto s = _box._pair.write(1, b);
-                debug trace("done");
             }
         );
         this._child.isDaemon = true;
@@ -1259,3 +1260,57 @@ unittest {
 //     getDefaultLoop().run(500.msecs);
 //     assert(test_value == 2);
 // }
+
+/// split execution to M threads and N fibers.
+/// map 
+void mapMxN(F, R)(F f, R r, ulong m, ulong n) {
+    long chunkLen(long x, long y) {
+        return x / y + (x % y ? 1 : 0);
+    }
+
+    import std.range;
+
+    assert(m > 0 && n > 0);
+    assert(r.length > 0);
+
+    // adjust M and N to length of r
+    m = min(m, r.length);
+
+    Threaded!(void delegate(R), R)[] threads;
+
+    foreach(c; chunks(r, chunkLen(r.length, m))) {
+        // get l/m chunks of input and start thread with this chunk as arg
+        auto t = threaded((R thread_chunk){
+            Task!(void delegate())[] fibers;
+            // split chunk on n parts and start fibers.
+            // each fiber apply f to each element
+            // finally it looks like
+            //            M
+            //           /|\
+            //          / | \
+            //         /  |  \
+            //        /   |   \
+            //       N    N    N
+            //      /|\  /|\  /|\
+            //      |||  |||  |||
+            //      |||  |||  |||
+            //
+            foreach (fiber_chunk; chunks(thread_chunk, chunkLen(thread_chunk.length,n))) {
+                auto f = task({
+                    foreach(e; fiber_chunk) {
+                        f(e);
+                    }
+                });
+                fibers ~= f;
+                f.start;
+            }
+            foreach (f; fibers) {
+                f.wait();
+            }
+        }, c).start;
+        threads ~= t;
+    }
+    foreach (t; threads) {
+        t.wait();
+    }
+}

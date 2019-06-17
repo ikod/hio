@@ -12,9 +12,11 @@ import std.typecons;
 import std.experimental.allocator;
 import std.experimental.allocator.mallocator;
 
+import core.memory: GC;
+
 import std.algorithm.comparison: max;
 import core.stdc.string: strerror;
-import core.stdc.errno: errno, EAGAIN;
+import core.stdc.errno: errno, EAGAIN, EINTR;
 
 import core.sys.linux.epoll;
 import core.sys.linux.timerfd;
@@ -48,7 +50,7 @@ struct NativeEventLoopImpl {
     }
     @disable this(this) {}
 
-    void initialize() @safe nothrow {
+    void initialize() @trusted nothrow {
         if ( epoll_fd == -1 ) {
             epoll_fd = (() @trusted  => epoll_create(MAXEVENTS))();
         }
@@ -57,6 +59,7 @@ struct NativeEventLoopImpl {
         }
         timers = new RedBlackTree!Timer();
         fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
+        GC.addRange(&fileHandlers[0], fileHandlers.length * FileEventHandler.sizeof);
     }
     void deinit() @trusted {
         close(epoll_fd);
@@ -64,6 +67,7 @@ struct NativeEventLoopImpl {
         close(timer_fd);
         timer_fd = -1;
         timers = null;
+        GC.removeRange(&fileHandlers[0]);
         Mallocator.instance.dispose(fileHandlers);
     }
 
@@ -139,11 +143,14 @@ struct NativeEventLoopImpl {
                 -1 :
                 _calculate_timeout(deadline);
 
-            uint ready = epoll_wait(epoll_fd, &events[0], MAXEVENTS, timeout_ms);
+            int ready = epoll_wait(epoll_fd, &events[0], MAXEVENTS, timeout_ms);
             debug tracef("got %d events", ready);
             if ( ready == 0 ) {
                 debug trace("epoll timedout and no events to process");
                 return;
+            }
+            if ( ready == -1 && errno == EINTR) {
+                continue;
             }
             if ( ready < 0 ) {
                 errorf("epoll_wait returned error %s", fromStringz(strerror(errno)));
@@ -311,7 +318,7 @@ struct NativeEventLoopImpl {
     }
     void _mod_kernel_timer(Timer t, in Duration d) @trusted {
         debug tracef("mod kernel timer to %s", t);
-        assert(d > 0.seconds);
+        assert(d >= 0.seconds, "Illegal timer %s".format(d));
         itimerspec itimer;
         auto ds = d.split!("seconds", "nsecs");
         itimer.it_value.tv_sec = cast(typeof(itimer.it_value.tv_sec)) ds.seconds;

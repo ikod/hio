@@ -13,6 +13,8 @@ import std.typecons;
 import std.experimental.allocator;
 import std.experimental.allocator.mallocator;
 
+import core.memory;
+
 import std.algorithm.comparison: max;
 import core.sys.posix.fcntl: open, O_RDONLY;
 import core.sys.posix.unistd: close;
@@ -97,7 +99,7 @@ struct NativeEventLoopImpl {
 //        CircBuff!NotificationDelivery
 //                                notificationsQueue;
 
-        HandlerDelegate[]       userEventHandlers;
+        //HandlerDelegate[]       userEventHandlers;
     }
     void initialize() @trusted nothrow {
         if ( kqueue_fd == -1) {
@@ -106,6 +108,7 @@ struct NativeEventLoopImpl {
         debug try{tracef("kqueue_fd=%d", kqueue_fd);}catch(Exception e){}
         timers = new RedBlackTree!Timer();
         fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
+        GC.addRange(fileHandlers.ptr, fileHandlers.length*FileEventHandler.sizeof);
     }
     void deinit() @trusted {
         debug tracef("deinit");
@@ -116,8 +119,9 @@ struct NativeEventLoopImpl {
         }
         in_index = 0;
         timers = null;
+        GC.removeRange(&fileHandlers[0]);
         Mallocator.instance.dispose(fileHandlers);
-        Mallocator.instance.dispose(userEventHandlers);
+        //Mallocator.instance.dispose(userEventHandlers);
     }
     int get_kernel_id() pure @safe nothrow @nogc {
         return kqueue_fd;
