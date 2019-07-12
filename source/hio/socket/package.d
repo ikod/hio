@@ -67,6 +67,12 @@ class SocketException : Exception {
     }
 }
 
+class ConnectionRefused : Exception {
+    this(string msg, string file = __FILE__, size_t line = __LINE__) @safe {
+        super(msg, file, line);
+    }
+}
+
 class hlSocket : FileEventHandler {
     private {
         enum State {
@@ -710,7 +716,7 @@ class HioSocket
             bool        _done;
             immutable(ubyte)[]     _data;
         }
-        this(HioSocket s, Duration t = 10.seconds) {
+        this(HioSocket s, Duration t = 10.seconds) @safe {
             _socket = s;
             _timeout = t;
             _buffer_size = s._socket._buffer_size;
@@ -749,7 +755,7 @@ class HioSocket
         hlSocket _socket;
         Fiber    _fiber;
     }
-    this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) {
+    this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) @safe {
         _socket = new hlSocket(af, sock_type, f, l);
         _socket.open();
     }
@@ -776,8 +782,8 @@ class HioSocket
             tracef("HioSocket handler enter");
         }
         (()@trusted{_fiber.call();})();
-    };
-    void connect(Address addr, Duration timeout) {
+    }
+    void connect(Address addr, Duration timeout) @trusted {
         auto loop = getDefaultLoop();
         _fiber = Fiber.getThis();
         void callback(AppEvent e) {
@@ -790,33 +796,47 @@ class HioSocket
             Fiber.yield();
         }
     }
-    void connect(string addr, Duration timeout){
+    ///
+    void connect(string addr, Duration timeout) @trusted {
         auto loop = getDefaultLoop();
         _fiber = Fiber.getThis();
+        int _errno;
         void callback(AppEvent e) {
+            if ( e & AppEvent.HUP ) {
+                _errno = _socket._errno;
+            }
             if ( !(e & AppEvent.IMMED) ) {
+                // we called yield
                 (() @trusted { _fiber.call(); })();
             }
         }
         if ( _socket.connect(addr, loop, &callback, timeout) ) {
             Fiber.yield();
         }
+        if ( _errno == ECONNREFUSED ) {
+            throw new ConnectionRefused("Unabled to connect socket: connection refused on " ~ addr);
+        }
     }
-    bool connected() {
+    ///
+    bool connected() @safe {
         return _socket.connected;
     }
-    auto errno() {
+    ///
+    auto errno() @safe {
         return _socket.socket_errno();
     }
-    auto listen(int backlog = 10) {
+    ///
+    auto listen(int backlog = 10) @safe {
         return _socket.listen(backlog);
     }
-    auto close() {
+    ///
+    void close() @safe {
         if ( _socket ) {
             _socket.close();
             _socket = null;
         }
     }
+    ///
     auto accept() {
         HioSocket s;
 
@@ -839,7 +859,7 @@ class HioSocket
         Fiber.yield();
         return s;
     }
-
+    ///
     IOResult recv(size_t n, Duration timeout = 10.seconds) {
         IORequest ioreq;
         IOResult  iores;
@@ -859,7 +879,7 @@ class HioSocket
         debug tracef("recv done on %s", _socket);
         return iores;
     }
-
+    ///
     size_t send(immutable (ubyte)[] data, Duration timeout = 1.seconds) {
         _fiber = Fiber.getThis();
         IOResult ioresult;
@@ -881,13 +901,13 @@ class HioSocket
         }
         return data.length - ioresult.output.length;
     }
-    InputStream inputStream(Duration t=10.seconds) {
+    InputStream inputStream(Duration t=10.seconds) @safe {
         return InputStream(this, t);
     }
 }
-
+///
 struct ByLineSplitter(R) {
-    R source;
+    private R source;
     ubyte[] data;
     bool started;
 

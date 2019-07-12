@@ -101,7 +101,10 @@ ReturnType!F App(F, A...) (F f, A args) {
         getDefaultLoop.deinit();
         uninitializeLoops();
         auto t = task(&_wrapper);
-        box._exception = t.start(Fiber.Rethrow.no);
+        auto e = t.start(Fiber.Rethrow.no);
+        if ( box._exception is null ) { // box.exception can be filled before Fiber start
+            box._exception = e;
+        }
         getDefaultLoop.run(Duration.max);
         getDefaultLoop.deinit();
         uninitializeLoops();
