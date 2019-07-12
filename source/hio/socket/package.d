@@ -73,6 +73,14 @@ class ConnectionRefused : Exception {
     }
 }
 
+bool isLinux() pure nothrow @nogc @safe {
+    version(linux) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 class hlSocket : FileEventHandler {
     private {
         enum State {
@@ -197,7 +205,7 @@ class hlSocket : FileEventHandler {
             if ( e & AppEvent.OUT ) {
                 _connected = true;
             }
-            if ( e & AppEvent.HUP ) {
+            if ( (e & AppEvent.HUP) || isLinux ) {
                 int err;
                 uint err_s = err.sizeof;
                 auto rc = (() @trusted => .getsockopt(_fileno, SOL_SOCKET, SO_ERROR, &err, &err_s))();
@@ -635,7 +643,7 @@ private auto str2inetaddr(string addr) @safe pure {
     // }
     // host = s[0].split(".");
     if ( host.length != 4 ) {
-        throw new Exception("addr must be in form a.b.c.d:p");
+        throw new Exception("addr must be in form a.b.c.d:p, got: " ~ addr);
     }
     uint   a = to!ubyte(host[0]) << 24 | to!ubyte(host[1]) << 16 | to!ubyte(host[2]) << 8 | to!ubyte(host[3]);
     ushort p = to!ushort(port);
@@ -800,11 +808,7 @@ class HioSocket
     void connect(string addr, Duration timeout) @trusted {
         auto loop = getDefaultLoop();
         _fiber = Fiber.getThis();
-        int _errno;
         void callback(AppEvent e) {
-            if ( e & AppEvent.HUP ) {
-                _errno = _socket._errno;
-            }
             if ( !(e & AppEvent.IMMED) ) {
                 // we called yield
                 (() @trusted { _fiber.call(); })();
@@ -813,7 +817,7 @@ class HioSocket
         if ( _socket.connect(addr, loop, &callback, timeout) ) {
             Fiber.yield();
         }
-        if ( _errno == ECONNREFUSED ) {
+        if ( _socket._errno == ECONNREFUSED ) {
             throw new ConnectionRefused("Unabled to connect socket: connection refused on " ~ addr);
         }
     }
@@ -901,16 +905,19 @@ class HioSocket
         }
         return data.length - ioresult.output.length;
     }
+    ///
     InputStream inputStream(Duration t=10.seconds) @safe {
         return InputStream(this, t);
     }
 }
 ///
 struct ByLineSplitter(R) {
-    private R source;
-    ubyte[] data;
-    bool started;
-
+    private {
+        R source;
+        ubyte[] data;
+        bool started;
+    }
+    ///
     this(R r) {
         source = r;
     }
@@ -927,11 +934,11 @@ struct ByLineSplitter(R) {
             source.popFront;
         }
     }
-
+    ///
     bool empty() {
         return source.empty && data.length == 0;
     }
-
+    ///
     string front() {
 
         auto i = countUntil(data, '\n');
@@ -949,7 +956,7 @@ struct ByLineSplitter(R) {
         }
         return assumeUTF(r);
     }
-
+    ///
     void popFront() {
         auto i = countUntil(data, '\n');
         if (i >= 0) {
@@ -964,7 +971,7 @@ struct ByLineSplitter(R) {
     }
 
 }
-
+///
 auto byLineSplitter(R)(R r) {
     return ByLineSplitter!R(r);
 }
