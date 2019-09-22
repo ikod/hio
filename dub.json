@@ -7,5 +7,6 @@
     "license": "proprietary",
     "targetType": "library",
     "dependencies": {
+        "nbuff": "~>0"
     }
 }
