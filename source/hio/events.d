@@ -26,7 +26,7 @@ enum AppEvent : int {
 }
 private immutable string[int] _names;
 
-static this() {
+shared static this() {
     _names = [
         0:"NONE",
         1:"IN",
