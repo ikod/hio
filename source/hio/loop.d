@@ -423,7 +423,7 @@ unittest {
         tracef("server listen on %d", server.fileno());
         server.bind("0.0.0.0:16000");
         server.listen();
-        server.accept(loop, &server_handler);
+        server.accept(loop, Duration.max, &server_handler);
     
         loop.startTimer(new Timer(50.msecs,  (AppEvent e) @safe {
             client = new hlSocket();
