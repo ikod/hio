@@ -236,8 +236,14 @@ struct NativeEventLoopImpl {
                 if ( e.events & EPOLLIN ) {
                     ae |= AppEvent.IN;
                 }
-                if ( e.events & EPOLLOUT ) {
+                if (e.events & EPOLLOUT) {
                     ae |= AppEvent.OUT;
+                }
+                if (e.events & EPOLLERR) {
+                    ae |= AppEvent.ERR;
+                }
+                if (e.events & EPOLLHUP) {
+                    ae |= AppEvent.HUP;
                 }
                 debug tracef("process event %02x on fd: %s, handler: %s", e.events, e.data.fd, fileHandlers[fd]);
                 if ( fileHandlers[fd] !is null ) {
