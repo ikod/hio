@@ -1267,7 +1267,7 @@ auto byLineSplitter(R)(R r) {
 }
 
 unittest {
-    import std.stdio, std.range;
+    import std.range;
     for(int s=1;s<7;s++) {
         auto result = "a\nbb\n\n\nc\n\n".chunks(s)
             .array.map!"to!string(a).representation".byLineSplitter;
