@@ -116,7 +116,6 @@ ReturnType!F App(F, A...) (F f, A args) {
         t.reset();
     };
     Thread child = new Thread(run);
-    child.isDaemon = true;
     child.start();
     child.join();
     if (box._exception)
@@ -366,7 +365,7 @@ auto spawnTask(T)(T task, Duration howLong = Duration.max) {
     return tid;
 }
 
-version(None) unittest
+unittest
 {
     globalLogLevel = LogLevel.info;
     info("test spawnTask");
@@ -415,6 +414,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         A       _args;
         bool    _ready = false;
         Thread  _child;
+        bool    _chind_joined; // did we called _child.join?
         Fiber   _parent;
         Box!R   _box;
         Timer   _t;
@@ -438,6 +438,10 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     }
     override bool wait(Duration timeout = Duration.max) {
         if (_ready) {
+            if ( !_chind_joined ) {
+                _child.join();
+                _chind_joined = true;
+            }
             if ( _box._exception ) {
                 throw _box._exception;
             }
@@ -453,6 +457,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 getDefaultLoop().stopPoll(_box._pair[0], AppEvent.IN);
                 debug tracef("threaded timed out");
                 auto throwable = _parent.call(Fiber.Rethrow.no);
+                _t = null;
             });
             getDefaultLoop().startTimer(_t);
         }
@@ -478,7 +483,11 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         getDefaultLoop().startPoll(_box._pair[0], AppEvent.IN, new ThreadEventHandler());
         Fiber.yield();
         debug tracef("wait done");
-        return true;
+        if ( _ready && !_chind_joined ) {
+            _child.join();
+            _chind_joined = true;
+        }
+        return _ready;
     }
 
     final auto run() {
@@ -503,7 +512,6 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 auto s = _box._pair.write(1, b);
             }
         );
-        this._child.isDaemon = true;
         this._child.start();
         return this;
     }
@@ -691,6 +699,7 @@ unittest
         t100.wait(300.msecs);
         assert(t100.ready);
         assert(t100.value == 100.msecs);
+        t200.wait();
         return 1;
     });
     assert(v == 1);
