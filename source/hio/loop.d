@@ -34,6 +34,12 @@ package void uninitializeLoops() {
     _defaultLoop[Mode.FALLBACK] = null;
 }
 
+version (unittest)
+{
+    // XXX remove when https://issues.dlang.org/show_bug.cgi?id=20256 fixed
+    extern (C) __gshared string[] rt_options = ["gcopt=parallel:0"];
+}
+
 ///
 /// disable default signal handling if you plan to handle signal in
 /// child threads
@@ -297,7 +303,7 @@ unittest {
 unittest {
     info("=== Testing signals ===");
     auto savedloglevel = globalLogLevel;
-    globalLogLevel = LogLevel.trace;
+    //globalLogLevel = LogLevel.trace;
     import core.sys.posix.signal;
     import core.thread;
     import core.sys.posix.unistd;
