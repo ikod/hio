@@ -144,11 +144,11 @@ struct NativeEventLoopImpl {
 
     void run(Duration d) @safe {
 
-        immutable bool runIndefinitely = (d == Duration.max);
+        immutable bool runInfinitely = (d == Duration.max);
         SysTime     deadline;
         timespec*   wait;
 
-        if ( !runIndefinitely ) {
+        if ( !runInfinitely ) {
             deadline = Clock.currTime + d;
         }
 
@@ -191,7 +191,7 @@ struct NativeEventLoopImpl {
             } 
             ts = _calculate_timespec(deadline);
 
-            wait = runIndefinitely ?
+            wait = runInfinitely ?
                       null
                     : &ts;
 
@@ -257,6 +257,8 @@ struct NativeEventLoopImpl {
                          * we have to receive event only on the earliest timer in list
                         */
                         assert(!timers.empty, "timers empty on timer event: %s".format(out_events[0..ready]));
+                        enforce((e.flags & EV_ERROR) == 0, "Timer errno: %d".format(e.data));
+
                         if ( udataToTimer(e.udata) !is timers.front) {
                             errorf("timer event: %s != timers.front: %s", udataToTimer(e.udata), timers.front);
                             //errorf("timers=%s", to!string(timers));
@@ -513,7 +515,17 @@ struct NativeEventLoopImpl {
     void _add_kernel_timer(in Timer t, in Duration d) @trusted {
         debug tracef("add kernel timer %s, delta %s", t, d);
         assert(d >= 0.seconds);
-        intptr_t delay_ms = d.split!"msecs".msecs;
+        intptr_t delay_ms;
+        if ( d < 36500.days)
+        {
+            delay_ms = d.split!"msecs".msecs;
+        }
+        else
+        {
+            // https://github.com/opensource-apple/xnu/blob/master/bsd/kern/kern_event.c#L1188
+            // OSX kerner refuses to set too large timer interwal with errno ERANGE
+            delay_ms = 36500.days.split!"msecs".msecs;
+        }
         kevent_t e;
         e.ident = 0;
         e.filter = EVFILT_TIMER;
