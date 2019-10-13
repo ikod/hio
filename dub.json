@@ -8,5 +8,6 @@
     "targetType": "library",
     "dependencies": {
         "nbuff": "~>0"
-    }
+    },
+    "libs-posix": ["cares"]
 }
