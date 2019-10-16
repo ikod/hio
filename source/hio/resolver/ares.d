@@ -67,6 +67,7 @@ extern(C)
 {
     alias    ares_host_callback = void function(void *arg, int status, int timeouts, hostent *he);
     int      ares_init(ares_channel*);
+    void     ares_destroy(ares_channel);
     timeval* ares_timeout(ares_channel channel, timeval *maxtv, timeval *tv);
     char*    ares_strerror(int);
     void     ares_gethostbyname(ares_channel channel, const char *name, int family, ares_host_callback callback, void *arg);
@@ -102,9 +103,20 @@ package static Resolver theResolver;
 static this() {
     theResolver = new Resolver();
 }
-public auto getResolver() @safe @nogc nothrow
+
+public auto hio_gethostbyname(string host)
 {
-    return theResolver;
+    return theResolver.gethostbyname(host);
+}
+
+public auto hio_gethostbyname6(string host)
+{
+    return theResolver.gethostbyname6(host);
+}
+///
+auto ares_statusString(int status)
+{
+    return fromStringz(ares_strerror(status));
 }
 
 package class Resolver: FileEventHandler
@@ -112,9 +124,6 @@ package class Resolver: FileEventHandler
     private
     {
         ares_channel                        _ares_channel;
-        //bool                                _in_progress;
-        //int                                 _status;
-        //InternetAddress[]                   _gethostbyName4result;
         hlEvLoop                            _loop;
         bool[ARES_GETSOCK_MAXNUM]           _in_read;
         bool[ARES_GETSOCK_MAXNUM]           _in_write;
@@ -126,20 +135,21 @@ package class Resolver: FileEventHandler
         ResolverCallbackDelegate6[int]      _cb6Delegates;
     }
 
-    // invariant
-    // {
-    //     assert(_in_progress >= 0);
-    // }
-
     this()
     {
         immutable init_res = ares_init(&_ares_channel);
         assert(init_res == ARES_SUCCESS, "Can't initialise ares.");
     }
-    ///
-    auto statusString(int status) const
+    ~this()
     {
-        return fromStringz(ares_strerror(status));
+        close();
+    }
+    void close()
+    {
+        if (_ares_channel)
+        {
+            ares_destroy(_ares_channel);
+        }
     }
 
     private ares_host_callback host_callback4 = (void *arg, int status, int timeouts, hostent* he)
@@ -200,7 +210,6 @@ package class Resolver: FileEventHandler
             {
                 return;
             }
-            //assert(he.h_addrtype == AF_INET6);
             debug tracef("he=%s", fromStringz(he.h_name));
             debug tracef("h_length=%X", he.h_length);
             auto a = he.h_addr_list;
@@ -439,14 +448,39 @@ package class Resolver: FileEventHandler
     override void eventHandler(int f, AppEvent ev)
     {
         debug tracef("handler: %d, %s", f, ev);
+        int socket_index;
+        ares_socket_t rs = ARES_SOCKET_BAD, ws = ARES_SOCKET_BAD;
+
+        if (f==_sockets[0])
+        {
+            // 99.99 %% case
+            socket_index = 0;
+        }
+        else
+        {
+            for(socket_index=1;socket_index<ARES_GETSOCK_MAXNUM;socket_index++)
+            if (f==_sockets[socket_index])
+            {
+                break;
+            }
+        }
+        // we'll got range violation in case we didn't find socket
+        // ares_process() can close socket for its own reasons
+        // so we have to detach descriptor.
+        // If we do not - we will have closed socket in polling system.
         if (ev & AppEvent.OUT)
         {
-            ares_process_fd(_ares_channel, ARES_SOCKET_BAD, f);
+            _loop.stopPoll(f, AppEvent.OUT);
+            _in_write[socket_index] = false;
+            ws = f;
         }
         if (ev & AppEvent.IN)
         {
-            ares_process_fd(_ares_channel, f, ARES_SOCKET_BAD);
+            _loop.stopPoll(f, AppEvent.IN);
+            _in_read[socket_index] = false;
+            rs = f;
         }
+        ares_process_fd(_ares_channel, rs, ws);
         auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
         debug tracef("getsocks: 0x%04X, %s", rc, _sockets);
         // prepare listening for socket events
@@ -523,14 +557,14 @@ unittest
     debug tracef("%s", r);
     if (r.status != 0) 
     {
-        tracef("status: %s", resolver.statusString(r.status));
+        tracef("status: %s", ares_statusString(r.status));
     }
     r = resolver.gethostbyname("iuytkjhcxbvkjhgfaksdjf");
     assert(r.status != 0);
     debug tracef("%s", r);
     if (r.status != 0) 
     {
-        tracef("status: %s", resolver.statusString(r.status));
+        tracef("status: %s", ares_statusString(r.status));
     }
 }
 
@@ -553,7 +587,7 @@ unittest
     debug tracef("%s", r);
     if (r.status != 0) 
     {
-        tracef("status: %s", resolver.statusString(r.status));
+        tracef("status: %s", ares_statusString(r.status));
     }
 }
 
