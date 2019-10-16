@@ -101,23 +101,18 @@ ReturnType!F App(F, A...) (F f, A args) {
         // 3. when eventLoop done(stopped inside from wrapper) the task will finish
         // 4. store value in box and use socketpair to send signal to caller thread
         //
-        getDefaultLoop.deinit();
-        uninitializeLoops();
         auto t = task(&_wrapper);
         auto e = t.start(Fiber.Rethrow.no);
         if ( box._exception is null ) { // box.exception can be filled before Fiber start
             box._exception = e;
         }
         getDefaultLoop.run(Duration.max);
-        getDefaultLoop.deinit();
-        uninitializeLoops();
-        //assert(t.ready);
-        //assert(t.state == Fiber.State.TERM);
         t.reset();
     };
-    Thread child = new Thread(run);
-    child.start();
-    child.join();
+    // Thread child = new Thread(run);
+    // child.start();
+    // child.join();
+    run();
     if (box._exception)
     {
         throw box._exception;
