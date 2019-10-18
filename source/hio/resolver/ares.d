@@ -81,10 +81,10 @@ extern(C)
     void     ares_library_cleanup();
 }
 
-alias ResolverCallbackFunction = void function(int status, InternetAddress[] addresses);
-alias ResolverCallbackDelegate = void delegate(int status, InternetAddress[] addresses);
-alias ResolverCallbackFunction6 = void function(int status, Internet6Address[] addresses);
-alias ResolverCallbackDelegate6 = void delegate(int status, Internet6Address[] addresses);
+alias ResolverCallbackFunction = void function(int status, uint[] addresses);
+alias ResolverCallbackDelegate = void delegate(int status, uint[] addresses);
+alias ResolverCallbackFunction6 = void function(int status, ubyte[16][]* addresses);
+alias ResolverCallbackDelegate6 = void delegate(int status, ubyte[16][]* addresses);
 
 alias ResolverResult4 = Tuple!(int, "status", InternetAddress[], "addresses");
 alias ResolverResult6 = Tuple!(int, "status", Internet6Address[], "addresses");
@@ -104,14 +104,14 @@ static this() {
     theResolver = new Resolver();
 }
 
-public auto hio_gethostbyname(string host)
+public auto hio_gethostbyname(string host, ushort port=InternetAddress.PORT_ANY)
 {
-    return theResolver.gethostbyname(host);
+    return theResolver.gethostbyname(host, port);
 }
 
-public auto hio_gethostbyname6(string host)
+public auto hio_gethostbyname6(string host, ushort port=Internet6Address.PORT_ANY)
 {
-    return theResolver.gethostbyname6(host);
+    return theResolver.gethostbyname6(host, port);
 }
 ///
 auto ares_statusString(int status)
@@ -155,7 +155,7 @@ package class Resolver: FileEventHandler
     private ares_host_callback host_callback4 = (void *arg, int status, int timeouts, hostent* he)
     {
         int id = cast(int)arg;
-        InternetAddress[] result;
+        uint[] result;
         debug tracef("got callback from ares s:\"%s\" t:%d h:%s, id: %d", fromStringz(ares_strerror(status)), timeouts, he, id);
 
         Resolver resolver = theResolver;
@@ -172,7 +172,7 @@ package class Resolver: FileEventHandler
                     addr = addr << 8;
                     addr += (*a)[i];
                 }
-                result ~= new InternetAddress(addr, InternetAddress.PORT_ANY);
+                result ~= addr;
                 a++;
             }
         }
@@ -200,7 +200,7 @@ package class Resolver: FileEventHandler
     private ares_host_callback host_callback6 = (void *arg, int status, int timeouts, hostent* he)
     {
         int id = cast(int)arg;
-        Internet6Address[] result;
+        ubyte[16][] result;
         debug tracef("got callback from ares s:\"%s\" t:%d h:%s, id: %d", fromStringz(ares_strerror(status)), timeouts, he, id);
 
         Resolver resolver = theResolver;
@@ -215,8 +215,8 @@ package class Resolver: FileEventHandler
             auto a = he.h_addr_list;
             while(*a)
             {
-                ubyte[16] *addr = cast(ubyte[16]*)*a;
-                result ~= new Internet6Address(*addr, Internet6Address.PORT_ANY);
+                //ubyte[16] *addr = cast(ubyte[16]*)*a;
+                result ~= *(cast(ubyte[16]*)*a);//new Internet6Address(*addr, Internet6Address.PORT_ANY);
                 a++;
             }
         }
@@ -231,19 +231,19 @@ package class Resolver: FileEventHandler
         {
             auto cb = *cbf;
             resolver._cb6Functions.remove(id);
-            cb(status, result);
+            cb(status, &result);
         }
         else if (cbd !is null)
         {
             auto cb = *cbd;
             resolver._cb6Delegates.remove(id);
-            cb(status, result);
+            cb(status, &result);
         }
     };
     ///
     /// gethostbyname which wait for result (can be called w/o eventloop or inside of task)
     ///
-    ResolverResult4 gethostbyname(string hostname)
+    ResolverResult4 gethostbyname(string hostname, ushort port=InternetAddress.PORT_ANY)
     {
         int                 status, id;
         InternetAddress[]   adresses;
@@ -255,10 +255,13 @@ package class Resolver: FileEventHandler
         auto fiber = Fiber.getThis();
         if (fiber is null)
         {
-            void cba(int s, InternetAddress[] a)
+            void cba(int s, uint[] a)
             {
                 status = s;
-                adresses = a;
+                foreach(ia;a)
+                {
+                    adresses ~= new InternetAddress(ia, port);
+                }
                 done = true;
                 _cbDelegates.remove(id);
                 debug tracef("resolve for %s: %s, %s", hostname, ares_strerror(s), a);
@@ -293,10 +296,12 @@ package class Resolver: FileEventHandler
         else
         {
             bool yielded;
-            void cbb(int s, InternetAddress[] a)
+            void cbb(int s, uint[] a)
             {
                 status = s;
-                adresses = a;
+                foreach (ia; a) {
+                    adresses ~= new InternetAddress(ia, port);
+                }
                 done = true;
                 debug tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
                 if (yielded) fiber.call();
@@ -327,10 +332,10 @@ package class Resolver: FileEventHandler
     ///
     /// gethostbyname which wait for result (can be called w/o eventloop or inside of task)
     ///
-    ResolverResult6 gethostbyname6(string hostname)
+    ResolverResult6 gethostbyname6(string hostname, ushort port = Internet6Address.PORT_ANY)
     {
         int                 status, id;
-        Internet6Address[]  adresses;
+        Internet6Address[]  addresses;
         bool                done;
 
         _id++;
@@ -339,10 +344,13 @@ package class Resolver: FileEventHandler
         auto fiber = Fiber.getThis();
         if (fiber is null)
         {
-            void cba(int s, Internet6Address[] a)
+            void cba(int s, ubyte[16][] *a)
             {
                 status = s;
-                adresses = a;
+                foreach(ia;*a)
+                {
+                    addresses ~= new Internet6Address(ia, port);
+                }
                 done = true;
                 _cb6Delegates.remove(id);
                 debug tracef("resolve for %s: %s, %s", hostname, ares_strerror(s), a);
@@ -354,7 +362,7 @@ package class Resolver: FileEventHandler
             {
                 // resolved from files
                 debug tracef("return ready result");
-                return ResolverResult6(status, adresses);
+                return ResolverResult6(status, addresses);
             }
             // called without loop/callback, we can and have to block
             int nfds, count;
@@ -372,15 +380,18 @@ package class Resolver: FileEventHandler
                 count = select(nfds, &readers, &writers, null, tvp);
                 ares_process(_ares_channel, &readers, &writers);
             }
-            return ResolverResult6(status, adresses);
+            return ResolverResult6(status, addresses);
         }
         else
         {
             bool yielded;
-            void cbb(int s, Internet6Address[] a)
+            void cbb(int s, ubyte[16][] *a)
             {
                 status = s;
-                adresses = a;
+                foreach (ia; *a)
+                {
+                    addresses ~= new Internet6Address(ia, port);
+                }
                 done = true;
                 debug tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
                 if (yielded) fiber.call();
@@ -397,7 +408,7 @@ package class Resolver: FileEventHandler
             {
                 // resolved from files
                 debug tracef("return ready result");
-                return ResolverResult6(status, adresses);
+                return ResolverResult6(status, addresses);
             }
             auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
             debug tracef("getsocks: 0x%04X, %s", rc, _sockets);
@@ -405,7 +416,7 @@ package class Resolver: FileEventHandler
             handleGetSocks(rc, &_sockets);
             yielded = true;
             Fiber.yield();
-            return ResolverResult6(status, adresses);
+            return ResolverResult6(status, addresses);
         }
     }
 
@@ -605,10 +616,12 @@ unittest
         bool done;
         bool yielded;
 
-        void cb(int s, InternetAddress[] a)
+        void cb(int s, uint[] a)
         {
             status = s;
-            adresses = a;
+            foreach (ia; a) {
+                adresses ~= new InternetAddress(ia, InternetAddress.PORT_ANY);
+            }
             done = true;
             debug tracef("resolve for %s: %s, %s", hostname, fromStringz(ares_strerror(s)), a);
             if (yielded)
@@ -647,15 +660,18 @@ unittest
     auto app(string hostname)
     {
         int status;
-        Internet6Address[] adresses;
+        Internet6Address[] addresses;
         Fiber fiber = Fiber.getThis();
         bool done;
         bool yielded;
 
-        void cb(int s, Internet6Address[] a)
+        void cb(int s, ubyte[16][] *a)
         {
             status = s;
-            adresses = a;
+            foreach (ia; *a)
+            {
+                addresses ~= new Internet6Address(ia, Internet6Address.PORT_ANY);
+            }
             done = true;
             debug tracef("resolve for %s: %s, %s", hostname, fromStringz(ares_strerror(s)), a);
             if (yielded)
@@ -670,7 +686,7 @@ unittest
             yielded = true;
             Fiber.yield();
         }
-        return adresses;
+        return addresses;
     }
     auto names = ["dlang.org", "google.com", "cloudflare.com", ".."];
     auto tasks = names.map!(n => task(&app, n)).array;
