@@ -1333,7 +1333,7 @@ unittest {
 auto mapMxN(F, R)(R r, F f, ulong m, ulong n) {
     enum Void = is(ReturnType!F == void);
 
-    assert(m > 0 && n > 0 && r.length > 0);
+    assert(m > 0 && n > 0 && r.length > 0, "should be m > 0 && n > 0 && r.length > 0, you have %d,%d,%d".format(m,n,r.length));
 
     m = min(m, r.length);
 
