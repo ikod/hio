@@ -747,7 +747,7 @@ class hlSocket : FileEventHandler {
             _input.reserve(iorq.to_read);
         }
         _pollingFor = ev;
-        assert(_pollingFor != AppEvent.NONE);
+        assert(_pollingFor != AppEvent.NONE, "No read or write requested");
 
         if (_io_timer) {
             debug tracef("closing prev timer: %s", _io_timer);
@@ -1139,6 +1139,51 @@ class HioSocket
         return InputStream(this, t);
     }
 }
+struct LineReader
+{
+    import nbuff;
+    private
+    {
+        enum    NL = "\n".representation;
+        HioSocket   _socket;
+        Buffer      _buff;
+        size_t      _last_position;
+        bool        _done;
+        ushort      _buffer_size;
+    }
+    this(HioSocket s, ushort bs = 16*1024)
+    {
+        _socket = s;
+        _buffer_size = bs;
+    }
+    auto rest()
+    {
+        return _buff;
+    }
+    auto readLine(Duration timeout = 10.seconds)
+    {
+        while(!_done)
+        {
+            auto p = _buff.countUntil(_last_position, NL);
+            if (p>=0)
+            {
+                auto line = _buff[0 .. p];
+                _last_position = 0;
+                _buff = _buff[p+1..$];
+                return line;
+            }
+            p = _buff.length;
+            auto r = _socket.recv(_buffer_size, timeout);
+            if (r.timedout || r.error || r.input.length == 0) {
+                _done = true;
+                return _buff;
+            } else {
+                _buff.append(r.input);
+            }
+        }
+        return Buffer();
+    }
+}
 
 unittest {
     import core.thread;
@@ -1212,6 +1257,48 @@ unittest {
     t = new Thread({ App(&server, cast(ushort) 12345); }).start;
     assertThrown!Exception(App(&client, cast(ushort)12346));
     assertThrown!Exception(t.join);
+
+    info("Test lineReader");
+    globalLogLevel = LogLevel.info;
+    t = new Thread({
+        App({
+            auto s = new HioSocket();
+            s.bind("127.0.0.1:12345");
+            s.listen();
+            auto c = s.accept(2.seconds);
+            if ( c is null ) {
+                s.close();
+                return;
+            }
+            foreach(l; ["\n", "a\n", "bb\n"])
+            {
+                c.send(l.representation, 1.seconds);
+            }
+            hlSleep(100.msecs);
+            c.send("ccc\nrest".representation, 100.msecs);
+            c.recv(64, 1.seconds);
+            c.close();
+            s.close();
+        });
+    }).start;
+    Thread.sleep(100.msecs);
+    App({
+        auto s = new HioSocket();
+        s.connect("127.0.0.1:12345", 10.seconds);
+        auto reader = LineReader(s);
+        auto e = reader.readLine();
+        auto a = reader.readLine();
+        auto b = reader.readLine();
+        auto c = reader.readLine();
+        auto rest = reader.rest();
+        s.send("die".representation, 1.seconds);
+        assert(e.length == 0);
+        assert(a.data == "a".representation);
+        assert(b.data == "bb".representation);
+        assert(c.data == "ccc".representation);
+        assert(rest.data == "rest".representation);
+    });
+    t.join;
 }
 
 ///
