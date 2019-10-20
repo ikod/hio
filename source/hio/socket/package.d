@@ -1151,15 +1151,23 @@ struct LineReader
         bool        _done;
         ushort      _buffer_size;
     }
+    /// constructor
     this(HioSocket s, ushort bs = 16*1024)
     {
         _socket = s;
         _buffer_size = bs;
     }
+    /// if input stream closed or errored
+    bool done()
+    {
+        return _done;
+    }
+    /// what we have in the buffer after fetching last line
     auto rest()
     {
         return _buff;
     }
+    /// read next line
     auto readLine(Duration timeout = 10.seconds)
     {
         while(!_done)
