@@ -493,6 +493,10 @@ struct NativeEventLoopImpl {
     void start_poll(int fd, AppEvent ev, FileEventHandler f) @trusted {
         epoll_event e;
         e.events = appEventToSysEvent(ev);
+        if ( ev & AppEvent.EXT_EPOLLEXCLUSIVE )
+        {
+            e.events |= EPOLLEXCLUSIVE;
+        }
         e.data.fd = fd;
         auto rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &e);
         enforce(rc >= 0, "epoll_ctl add(%d, %s): %s".format(fd, e, fromStringz(strerror(errno))));
@@ -507,6 +511,8 @@ struct NativeEventLoopImpl {
     }
     auto appEventToSysEvent(AppEvent ae) pure @safe {
         import core.bitop;
+        // clear EXT_ flags
+        ae &= AppEvent.ALL;
         assert( popcnt(ae) == 1, "Set one event at a time, you tried %x, %s".format(ae, appeventToString(ae)));
         assert( ae <= AppEvent.CONN, "You can ask for IN,OUT,CONN events");
         switch ( ae ) {

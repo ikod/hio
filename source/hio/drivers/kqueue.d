@@ -628,6 +628,8 @@ struct NativeEventLoopImpl {
 
 auto appEventToSysEvent(AppEvent ae) {
     import core.bitop;
+    // clear EXT_ flags
+    ae &= AppEvent.ALL;
     assert( popcnt(ae) == 1, "Set one event at a time, you tried %x, %s".format(ae, appeventToString(ae)));
     assert( ae <= AppEvent.CONN, "You can ask for IN,OUT,CONN events");
     switch ( ae ) {

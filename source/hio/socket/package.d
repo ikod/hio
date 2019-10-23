@@ -543,13 +543,11 @@ class hlSocket : FileEventHandler {
     public void accept(T)(hlEvLoop loop, Duration timeout, T f) {
         _loop = loop;
         _accept_callback = f;
-//        if ( _state != State.ACCEPTING ) {
-            _state = State.ACCEPTING;
-            _polling |= AppEvent.IN;
+        _state = State.ACCEPTING;
+        _polling |= AppEvent.IN;
         _connect_timer = new Timer(timeout, &timeoutHandler);
         _loop.startTimer(_connect_timer);
-            loop.startPoll(_fileno, AppEvent.IN, this);
-//        }
+        loop.startPoll(_fileno, AppEvent.IN|AppEvent.EXT_EPOLLEXCLUSIVE, this);
     }
 
     void io_handler(AppEvent ev) @safe {

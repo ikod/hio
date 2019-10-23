@@ -22,7 +22,8 @@ enum AppEvent : int {
     TMO  = 0x20,
     USER = 0x40,
     IMMED= 0x80,
-    ALL  = 0x7f
+    ALL  = 0xff,
+    EXT_EPOLLEXCLUSIVE = 0x100, // linux/epoll specific 
 }
 private immutable string[int] _names;
 
@@ -35,7 +36,8 @@ shared static this() {
         8:"CONN",
        16:"HUP",
        32:"TMO",
-       64:"USER"
+       64:"USER",
+       0x80:"IMMED",
     ];
 }
 
