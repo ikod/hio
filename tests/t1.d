@@ -1,12 +1,12 @@
 #!/usr/bin/env dub
 /+ dub.sdl:
-    name "t0"
+    name "t1"
     dflags "-I../source"
     dflags "-debug"
     lflags "-L.."
     lflags "-lhio"
     lflags "-lcares"
-    dependency "nbuff" version="*"
+    dependency "hio" version="~>0"
 +/
 // cd to tests and run with "dub run --single t1.d"
 
@@ -25,7 +25,7 @@ import hio.resolver;
 void main()
 {
     globalLogLevel = LogLevel.info;
-    auto r = hio_gethostbyname("dlang.org");
+    auto r = hio_gethostbyname("dlang.org", 80);
     writefln("resolve dlang.org in main thread: %s", r.addresses);
     auto result = App({
         auto hosts = [
@@ -40,7 +40,7 @@ void main()
         auto resolve(string host)
         {
             iota(10).each!(n=>hio_gethostbyname(host));
-            return hio_gethostbyname(host);
+            return hio_gethostbyname(host, 80);
         }
         auto tasks = hosts.map!(h => task(&resolve, h)).array;
         tasks.each!(t => t.start);
