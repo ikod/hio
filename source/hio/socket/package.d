@@ -36,7 +36,7 @@ import core.stdc.errno;
 
 public import hio.events;
 import hio.common;
-//import nbuff;
+import nbuff;
 
 import hio;
 
@@ -974,14 +974,20 @@ class HioSocket
         return _socket.toString();
     }
 
+    auto fileno()
+    {
+        return _socket.fileno;
+    }
+
     void bind(string addr) {
         _socket.bind(addr);
     }
     void handler(AppEvent e) @safe {
         debug
         {
-            tracef("HioSocket handler enter");
+            tracef("HioSocket handler enter %s", e);
         }
+        assert(_fiber !is null);
         (()@trusted{_fiber.call();})();
     }
     void connect(Address addr, Duration timeout) @trusted {
@@ -1141,7 +1147,6 @@ class HioSocket
 }
 struct LineReader
 {
-    import nbuff;
     private
     {
         enum    NL = "\n".representation;
