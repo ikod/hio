@@ -512,6 +512,10 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     }
 }
 
+///
+/// Task. Exacute computation. Inherits from Fiber
+/// you can start, wait, check for readiness.
+///
 class Task(F, A...) : Fiber, Computation if (isCallable!F) {
     enum  Void = is(ReturnType!F==void);
     alias start = call;
@@ -700,6 +704,25 @@ unittest
     assert(v == 1);
 }
 
+unittest
+{
+    import core.memory;
+    // create lot of "daemon" tasks to check how they will survive GC collection.
+    void t0(int i) {
+        if (i%5==0)
+            hlSleep((i%1000).msecs);
+    }
+    App({
+        enum tasks = 10_000;
+        infof(" create %d tasks", tasks);
+        iota(tasks).each!((int i){
+            auto t = task(&t0, i);
+            t.start();
+        });
+        GC.collect();
+        hlSleep(2.seconds);
+    });
+}
 // unittest {
 //     //
 //     // two tasks and spawned thread under event loop
