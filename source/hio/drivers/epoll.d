@@ -93,7 +93,7 @@ struct NativeEventLoopImpl {
          * which mean we wil run events once
         **/
         SysTime deadline = Clock.currTime + d;
-        debug tracef("evl run %s",runIndefinitely? "indefinitely": "for %s".format(d));
+        debug tracef("evl run %s",runIndefinitely? "infinitely": "for %s".format(d));
 
         scope ( exit )
         {
