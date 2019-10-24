@@ -414,6 +414,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         Box!R   _box;
         Timer   _t;
         enum Void = _box.Void;
+        bool    _isDaemon;
     }
     final this(F f, A args) {
         _f = f;
@@ -423,6 +424,14 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
 
     override bool ready() {
         return _ready;
+    }
+    void isDaemon(bool v)
+    {
+        _isDaemon = v;
+    }
+    auto isDaemon()
+    {
+        return _isDaemon;
     }
     static if (!Void) {
         R value() {
@@ -507,6 +516,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 auto s = _box._pair.write(1, b);
             }
         );
+        this._child.isDaemon = _isDaemon;
         this._child.start();
         return this;
     }
