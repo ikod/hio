@@ -3,8 +3,6 @@
     name "t1"
     dflags "-I../source"
     dflags "-debug"
-    lflags "-L.."
-    lflags "-lhio"
     lflags "-lcares"
     dependency "hio" version="~>0"
 +/

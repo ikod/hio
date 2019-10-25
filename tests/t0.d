@@ -3,9 +3,7 @@
     name "t0"
     dflags "-I../source"
     dflags "-debug"
-    lflags "-L.."
-    lflags "-lhio"
-    dependency "nbuff" version="*"
+    dependency "hio" version="*"
 +/
 // cd to tests and run with "dub run --single t0.d"
 import std.datetime;

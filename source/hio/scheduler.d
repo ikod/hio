@@ -425,9 +425,10 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     override bool ready() {
         return _ready;
     }
-    void isDaemon(bool v)
+    auto isDaemon(bool v)
     {
         _isDaemon = v;
+        return this;
     }
     auto isDaemon()
     {
@@ -582,15 +583,12 @@ class Task(F, A...) : Fiber, Computation if (isCallable!F) {
         assert(this._waitor is null, "You can't wait twice");
         this._waitor = Fiber.getThis();
         assert(_waitor !is null, "You can wait task only from another task or fiber");
-        Timer t;
-        if ( timeout > 0.msecs ) {
-            t = new Timer(timeout, (AppEvent e) @trusted {
-                auto w = _waitor;
-                _waitor = null;
-                w.call(Fiber.Rethrow.no);
-            });
-            getDefaultLoop().startTimer(t);
-        }
+        Timer t = new Timer(timeout, (AppEvent e) @trusted {
+            auto w = _waitor;
+            _waitor = null;
+            w.call(Fiber.Rethrow.no);
+        });
+        getDefaultLoop().startTimer(t);
         debug tracef("yeilding task");
         Fiber.yield();
         if ( t )
@@ -893,7 +891,7 @@ unittest {
             return t.result;
         }
         auto r = App(&f);
-        assert(r == 4, "spawnTask returned %d, expected 4".format(r));
+        assert(r == 4, "App returned %d, expected 4".format(r));
         infof("test4 ok in %s mode", m);
     }
 }
@@ -920,8 +918,6 @@ unittest {
 
 unittest {
     globalLogLevel = LogLevel.info;
-    //auto oScheduler = scheduler;
-    //scheduler = new MyScheduler();
     auto mode = globalLoopMode;
     scope(exit) {
         globalLoopMode = mode;
@@ -939,7 +935,7 @@ unittest {
             return v+1;
         }
         auto r = App(&f);
-        assert(r == 7, "spawnTask returned %d, expected 7".format(r));
+        assert(r == 7, "App returned %d, expected 7".format(r));
         infof("test7 ok in %s mode", m);
     }
 }

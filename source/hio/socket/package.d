@@ -285,6 +285,10 @@ class hlSocket : FileEventHandler {
                 //hlSocket ns = new hlSocket(_af, _sock_type, new_s);
                 //fd2so[new_s] = ns;
                 //_accept_callback(ns);
+                if ( _connect_timer ) {
+                    _loop.stopTimer(_connect_timer);
+                    _connect_timer = null;
+                }
                 _accept_callback(new_s);
                 debug tracef("accept_callback for fd: %d - done", new_s);
             }
@@ -1049,32 +1053,33 @@ class HioSocket
         }
     }
     ///
+    private HioSocket _accept_socket;
+    void accept_callback(int fileno) scope @trusted {
+        debug tracef("Got %d on accept", fileno);
+        if ( fileno < 0 ) {
+            _accept_socket = null;
+            _fiber.call();
+            return;
+        }
+        debug tracef("got accept callback for socket %d", fileno);
+        if ( _socket._polling & AppEvent.IN ) {
+            getDefaultLoop.stopPoll(_socket.fileno, AppEvent.IN);
+            _socket._polling &= ~AppEvent.IN;
+        }
+        _socket._state = hlSocket.State.IDLE;
+        _accept_socket = new HioSocket(fileno);
+        _fiber.call();
+    }
     auto accept(Duration timeout = Duration.max) {
         HioSocket s;
 
         auto loop = getDefaultLoop();
         _fiber = Fiber.getThis();
 
-        void callback(int fileno) @trusted {
-            debug tracef("Got %d on accept", fileno);
-            if ( fileno < 0 ) {
-                s = null;
-                _fiber.call();
-                return;
-            }
-            debug tracef("got accept callback for socket %d", fileno);
-            if ( _socket._polling & AppEvent.IN ) {
-                getDefaultLoop.stopPoll(_socket.fileno, AppEvent.IN);
-                _socket._polling &= ~AppEvent.IN;
-            }
-            _socket._state = hlSocket.State.IDLE;
-            s = new HioSocket(fileno);
-            _fiber.call();
-        }
         _socket._accepts_in_a_row = 1;
-        _socket.accept(loop, timeout, &callback);
+        _socket.accept(loop, timeout, &accept_callback);
         Fiber.yield();
-        return s;
+        return _accept_socket;
     }
     ///
     IOResult recv(size_t n, Duration timeout = 10.seconds) @trusted {
