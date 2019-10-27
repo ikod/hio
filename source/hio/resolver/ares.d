@@ -100,8 +100,16 @@ shared static ~this()
 }
 
 package static Resolver theResolver;
-static this() {
+static this()
+{
     theResolver = new Resolver();
+}
+static ~this()
+{
+    if (theResolver)
+    {
+        theResolver.close();
+    }
 }
 
 public auto hio_gethostbyname(string host, ushort port=InternetAddress.PORT_ANY)
