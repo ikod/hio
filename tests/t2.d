@@ -11,18 +11,19 @@ module tests.t2;
 import std.experimental.logger;
 import std.datetime;
 import std.string;
+import std.algorithm;
+import std.range;
+
+import core.atomic;
 
 import hio.socket;
 import hio.scheduler;
 
-void handler(HioSocket s)
-{
-    s.recv(16, 200.msecs);
-    s.close();
-}
+shared int ops;
+
 void client()
 {
-    foreach(i;0..50000000)
+    while(true)
     {
         auto s = new HioSocket();
         s.connect("127.0.0.1:12345", 1.seconds);
@@ -31,19 +32,31 @@ void client()
     }
 }
 
+void handler(HioSocket s)
+{
+    auto message = s.recv(16, 200.msecs);
+    assert(message.input == "hello".representation);
+    s.close();
+}
+
 void server(int so, int n)
 {
     auto sock = new HioSocket(so);
+    scope(exit)
+    {
+        sock.close();
+    }
     while(true)
     {
         auto client_socket = sock.accept();
+        ops.atomicOp!"+="(1);
         //infof("accept %d", n);
         task(&handler, client_socket).start;
     }
 }
 
 enum clients = 4;
-enum servers = 4;
+enum servers = 2;
 
 void main()
 {
@@ -53,21 +66,15 @@ void main()
         server_socket.bind("0.0.0.0:12345");
         server_socket.listen(100);
 
-        foreach(i;0..servers)
-        {
-            threaded(&server, server_socket.fileno, i)
-                .isDaemon(true) // do not wait completion
-                .start;
-        }
+        auto server_threads = iota(servers).map!(i => threaded(&server, server_socket.fileno, i).start).array;
 
-        foreach(i;0..clients)
-        {
-            threaded(&client)
-                .isDaemon(true) // do not wait completion
-                .start;
-        }
-        hlSleep(1.minutes);
+        auto client_threads = iota(clients).map!(i => threaded(&client).start).array;
+
+        hlSleep(10.seconds);
+
+        client_threads.each!(t => t.stopThreadLoop());
+        server_threads.each!(t => t.stopThreadLoop());
         server_socket.close();
-        info("done");
+        infof("done %d", ops);
     });
 }

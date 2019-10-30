@@ -252,6 +252,7 @@ struct NativeEventLoopImpl {
                     }
                     catch (Exception e) {
                         errorf("On file handler: %d, %s", fd, e);
+                        throw e;
                     }
                 }
                 //HandlerDelegate h = cast(HandlerDelegate)e.data.ptr;

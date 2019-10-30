@@ -399,27 +399,34 @@ unittest
     );
 }
 
+enum Commands
+{
+    StopLoop,
+    WakeUpLoop
+}
 ///
 class Threaded(F, A...) : Computation if (isCallable!F) {
     alias start = run;
     private {
         alias R = ReturnType!F;
 
-        F       _f;
-        A       _args;
-        bool    _ready = false;
-        Thread  _child;
-        bool    _chind_joined; // did we called _child.join?
-        Fiber   _parent;
-        Box!R   _box;
-        Timer   _t;
+        F           _f;
+        A           _args;
+        bool        _ready = false;
+        Thread      _child;
+        bool        _chind_joined; // did we called _child.join?
+        Fiber       _parent;
+        Box!R       _box;
+        Timer       _t;
         enum Void = _box.Void;
-        bool    _isDaemon;
+        bool        _isDaemon;
+        SocketPair  _commands;
     }
     final this(F f, A args) {
         _f = f;
         _args = args;
         _box._pair = makeSocketPair();
+        _commands = makeSocketPair();
     }
 
     override bool ready() {
@@ -440,6 +447,18 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 return _box._data;
             throw new NotReadyException("You can't call value for non-ready task");
         }
+    }
+    void stopThreadLoop()
+    {
+        debug tracef("stopping loop in thread");
+        ubyte[1] cmd = [Commands.StopLoop];
+        _commands.write(1, cmd);
+    }
+    void wakeUpThreadLoop()
+    {
+        debug tracef("waking up loop in thread");
+        ubyte[1] cmd = [Commands.WakeUpLoop];
+        _commands.write(1, cmd);
     }
     override bool wait(Duration timeout = Duration.max) {
         if (_ready) {
@@ -496,10 +515,29 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     }
 
     final auto run() {
+        class CommandsHandler : FileEventHandler
+        {
+            override void eventHandler(int fd, AppEvent e) @trusted
+            {
+                assert(fd == _commands[0]);
+                auto b = _commands.read(0, 1);
+                final switch(b[0])
+                {
+                    case Commands.StopLoop:
+                        debug tracef("got stopLoop command");
+                        getDefaultLoop.stop();
+                        break;
+                    case Commands.WakeUpLoop:
+                        debug tracef("got WakeUpLoop command");
+                        break;
+                }
+            }
+        }
         this._child = new Thread(
             {
                 getDefaultLoop.deinit();
                 uninitializeLoops();
+                getDefaultLoop.startPoll(_commands[0], AppEvent.IN, new CommandsHandler());
                 try {
                     debug trace("calling");
                     static if (!Void) {
@@ -687,6 +725,26 @@ unittest {
         return 1;
     });
     assert(v == 1);
+}
+
+unittest
+{
+    // test wakeup thread loop and stop thread loop
+    globalLogLevel = LogLevel.info;
+    App({
+        bool canary = true;
+        auto t = threaded({
+            hlSleep(10.seconds);
+            canary = false;
+        }).start;
+        hlSleep(100.msecs);
+        t.wakeUpThreadLoop();
+        hlSleep(500.msecs);
+        t.stopThreadLoop();
+        assert(canary);
+        t.wait();
+    });
+    globalLogLevel = LogLevel.info;
 }
 
 unittest
