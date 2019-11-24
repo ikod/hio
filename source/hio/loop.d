@@ -361,7 +361,7 @@ unittest {
     foreach(loop; loops) {
         infof("testing loop '%s'", loop.name);
         immutable limit = 1;
-        int resuests = 0;
+        int requests = 0;
         int responses = 0;
         hlSocket client, server;
         immutable(ubyte)[] input;
@@ -392,7 +392,7 @@ unittest {
                 return;
             }
             tracef("sending to %s", client);
-            auto rc = client.send(request.format(resuests).representation());
+            auto rc = client.send(request.format(requests).representation());
             if ( rc == -1 ) {
                 tracef("error on %s", client);
                 client.close();
@@ -410,7 +410,7 @@ unittest {
                 // client received response from server
                 responses++;
                 client.close();
-                if ( ++resuests < limit ) {
+                if ( ++requests < limit ) {
                     client = new hlSocket();
                     client.open();
                     client.connect("127.0.0.1:16000", loop, &client_handler, dur!"seconds"(5));
