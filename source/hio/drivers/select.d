@@ -24,7 +24,10 @@ import core.stdc.string: strerror;
 import core.stdc.errno;
 import core.stdc.signal;
 
+import timingwheels;
+
 import hio.events;
+import hio.common;
 
 //
 // TODO add support for multiple select event loops
@@ -58,56 +61,98 @@ struct FallbackEventLoopImpl {
         fd_set                  err_fds;
 
         bool                    stopped = false;
-        RedBlackTree!Timer      timers;
-        Timer[]                 overdue;    // timers added with expiration in past
 
         Signal[][int]           signals;
 
         FileDescriptor[numberOfDescriptors]    fileDescriptors;
         FileEventHandler[]      fileHandlers;
+
+        Timer[]                 overdue;    // timers added with expiration in past or with cicks==0
+
+        RedBlackTree!Timer      precise_timers;     // precise timers
+        TimingWheels!Timer      timingwheels;       // timing wheels
+        Duration                tick = 5.msecs;
         //CircBuff!Notification   notificationsQueue;
     }
 
     @disable this(this) {};
 
     void initialize() @safe nothrow {
-        timers = new RedBlackTree!Timer();
+        precise_timers = new RedBlackTree!Timer();
         fileHandlers = new FileEventHandler[](1024);
     }
     void deinit() @safe {
-        timers = null;
+        precise_timers = null;
     }
     void stop() @safe {
         debug trace("mark eventloop as stopped");
         stopped = true;
     }
 
-    /**
-     * Find shortest interval between now->deadline, now->earliest timer
-     * If deadline expired or timer in past - set zero wait time
-     */
-    timeval* _calculate_timeval(SysTime deadline, timeval* tv) {
-        SysTime now = Clock.currTime;
-        Duration d = deadline - now;
-        if ( ! timers.empty ) {
-            d = min(d, timers.front._expires - now);
+    private Duration timeUntilNextTimer()
+    {
+        Duration result = Duration.max;
+        if ( ! precise_timers.empty )
+        {
+            result = min(result, precise_timers.front._expires - Clock.currTime);
         }
-        d = max(d, 0.seconds);
-        auto converted = d.split!("seconds", "usecs");
+        result = min(result, timingwheels.timeUntilNextEvent(tick));
+        return result;
+    }
+    private timeval* _calculate_timeval(Duration d, timeval* tv)
+    {
+        if (d < 0.seconds)
+        {
+            d = 0.seconds;
+        }
+        immutable converted = d.split!("seconds", "usecs");
         tv.tv_sec  = cast(typeof(tv.tv_sec))converted.seconds;
         tv.tv_usec = cast(typeof(tv.tv_usec))converted.usecs;
         return tv;
     }
-    timeval* _calculate_timeval(timeval* tv) {
-        SysTime  now = Clock.currTime;
-        Duration d;
-        d = timers.front._expires - now;
-        d = max(d, 0.seconds);
-        auto converted = d.split!("seconds", "usecs");
-        tv.tv_sec  = cast(typeof(tv.tv_sec))converted.seconds;
-        tv.tv_usec = cast(typeof(tv.tv_usec))converted.usecs;
-        return tv;
+    private void execute_overdue_timers()
+    {
+        while (overdue.length > 0)
+        {
+            // execute timers which user requested with negative delay
+            Timer t = overdue[0];
+            overdue = overdue[1..$];
+            debug(hioselect) safe_tracef("execute overdue %s", t);
+            HandlerDelegate h = t._handler;
+            try {
+                h(AppEvent.TMO);
+            } catch (Exception e) {
+                errorf("Uncaught exception: %s", e);
+            }
+        }
     }
+    // /**
+    //  * Find shortest interval between now->deadline, now->earliest timer
+    //  * If deadline expired or timer in past - set zero wait time
+    //  */
+    // timeval* _calculate_timeval(SysTime deadline, timeval* tv) {
+    //     SysTime now = Clock.currTime;
+    //     Duration d = deadline - now;
+    //     if ( ! precise_timers.empty ) {
+    //         d = min(d, precise_timers.front._expires - now);
+    //     }
+    //     d = min(d, timingwheels.timeUntilNextEvent(tick));
+    //     d = max(d, 0.seconds);
+    //     auto converted = d.split!("seconds", "usecs");
+    //     tv.tv_sec  = cast(typeof(tv.tv_sec))converted.seconds;
+    //     tv.tv_usec = cast(typeof(tv.tv_usec))converted.usecs;
+    //     return tv;
+    // }
+    // timeval* _calculate_timeval(timeval* tv) {
+    //     SysTime  now = Clock.currTime;
+    //     Duration d;
+    //     d = timers.front._expires - now;
+    //     d = max(d, 0.seconds);
+    //     auto converted = d.split!("seconds", "usecs");
+    //     tv.tv_sec  = cast(typeof(tv.tv_sec))converted.seconds;
+    //     tv.tv_usec = cast(typeof(tv.tv_usec))converted.usecs;
+    //     return tv;
+    // }
     void run(Duration d) {
 
         immutable bool runIndefinitely = (d == Duration.max);
@@ -120,7 +165,7 @@ struct FallbackEventLoopImpl {
             deadline = now + d;
         }
 
-        debug tracef("evl run %s",runIndefinitely? "indefinitely": "for %s".format(d));
+        debug(hioselect) safe_tracef("evl run %s",runIndefinitely? "indefinitely": "for %s".format(d));
 
         scope(exit) {
             stopped = false;
@@ -130,44 +175,27 @@ struct FallbackEventLoopImpl {
 
             int fdmax = -1;
 
-            //
-            // handle user events(notifications)
-            //
-            //auto counter = notificationsQueue.Size * 10;
-            //while(!notificationsQueue.empty){
-            //    auto n = notificationsQueue.get();
-            //    n.handler();
-            //    counter--;
-            //    enforce(counter > 0, "Can't clear notificatioinsQueue");
-           // }
+            execute_overdue_timers();
 
-            while (overdue.length > 0) {
-                // execute timers which user requested with negative delay
-                Timer t = overdue[0];
-                overdue = overdue[1..$];
-                debug tracef("execute overdue %s", t);
-                HandlerDelegate h = t._handler;
-                try {
-                    h(AppEvent.TMO);
-                } catch (Exception e) {
-                    errorf("Uncaught exception: %s", e);
-                }
-            }
             if (stopped) {
                 break;
-            } 
+            }
 
-            while ( !timers.empty && timers.front._expires <= now) {
-                debug tracef("processing overdue  %s, lag: %s", timers.front, Clock.currTime - timers.front._expires);
-                Timer t = timers.front;
+            while ( !precise_timers.empty && precise_timers.front._expires <= now) {
+                debug(hioselect) safe_tracef("processing overdue from precise %s, lag: %s",
+                        precise_timers.front, Clock.currTime - precise_timers.front._expires);
+                Timer t = precise_timers.front;
                 HandlerDelegate h = t._handler;
-                timers.removeFront;
+                precise_timers.removeFront;
                 try {
                     h(AppEvent.TMO);
                 } catch (Exception e) {
                     errorf("Uncaught exception: %s", e);
                 }
                 now = Clock.currTime;
+            }
+            if (stopped) {
+                break;
             }
 
             FD_ZERO(&read_fds);
@@ -179,7 +207,7 @@ struct FallbackEventLoopImpl {
                 if ( e == AppEvent.NONE ) {
                     continue;
                 }
-                debug tracef("poll %d for %s", fd, fileDescriptors[fd]);
+                debug(hioselect) safe_tracef("poll %d for %s", fd, fileDescriptors[fd]);
                 if ( e & AppEvent.IN ) {
                     FD_SET(fd, &read_fds);
                 }
@@ -189,27 +217,35 @@ struct FallbackEventLoopImpl {
                 fdmax = max(fdmax, fd);
             }
 
-            wait = (runIndefinitely && timers.empty)  ?
-                          null
-                        : _calculate_timeval(deadline, &tv);
-            if ( runIndefinitely && timers.empty ) {
+            //
+            // Next limits for wait time:
+            // - deadline (user ask loop run duration d)
+            // - or requested to run indefinitely
+            // - next precise_timer
+            // - next timingwheel timer
+            //
+            immutable untilTimer = timeUntilNextTimer();
+            immutable untilDeadline = runIndefinitely ? Duration.max : deadline - Clock.currTime;
+            immutable nextStop = min(untilTimer, untilDeadline);
+            if ( nextStop == Duration.max )
+            {
                 wait = null;
-            } else
-            if ( runIndefinitely && !timers.empty ) {
-                wait = _calculate_timeval(&tv);
-            } else
-                wait = _calculate_timeval(deadline, &tv);
+            }
+            else
+            {
+                wait = _calculate_timeval(nextStop, &tv);
+            }
 
-            //debug tracef("waiting for events %s", wait is null?"forever":"%s".format(*wait));
+            //debug(hioselect) safe_tracef("waiting for events %s", wait is null?"forever":"%s".format(*wait));
             auto ready = select(fdmax+1, &read_fds, &write_fds, &err_fds, wait);
-            //debug tracef("returned %d events", ready);
+            //debug(hioselect) safe_tracef("returned %d events", ready);
             if ( ready < 0 && errno == EINTR ) {
                 int s_ind;
                 while(s_ind < last_signal_index) {
                     int signum = last_signal[s_ind];
                     assert(signals[signum].length > 0);
                     foreach(s; signals[signum]) {
-                        debug tracef("processing signal handler %s", s);
+                        debug(hioselect) safe_tracef("processing signal handler %s", s);
                         try {
                             SigHandlerDelegate h = s._handler;
                             h(signum);
@@ -222,42 +258,34 @@ struct FallbackEventLoopImpl {
                 last_signal_index = 0;
                 continue;
             }
-            if ( ready < 0 ) {
+            if ( ready < 0 )
+            {
                 errorf("on call: (%s, %s, %s, %s)", fdmax+1, read_fds, write_fds, tv);
                 errorf("select returned error %s", fromStringz(strerror(errno)));
             }
             enforce(ready >= 0);
             if ( ready == 0 ) {
                 // Timedout
-                //
-                // For select there can be two reasons for ready == 0:
-                // 1. we reached deadline
-                // 2. we have timer event
-                //
-                if ( timers.empty ) {
-                    // there were no timers, so this can be only timeout
-                    debug trace("select timedout and no timers active");
-                    assert(Clock.currTime >= deadline);
-                    return;
-                }
-                now = Clock.currTime;
-                if ( !runIndefinitely && now >= deadline ) {
-                    debug trace("deadline reached");
-                    return;
+                // check timingweels
+                while(timingwheels.timeUntilNextEvent(tick) <= 0.msecs)
+                {
+                    auto ticks = timingwheels.ticksUntilNextEvent();
+                    auto wr = timingwheels.advance(ticks);
+                    foreach(t; wr.timers)
+                    {
+                        HandlerDelegate h = t._handler;
+                        try {
+                            h(AppEvent.TMO);
+                        } catch (Exception e) {
+                            errorf("Uncaught exception: %s", e);
+                        }
+                    }
                 }
 
-                /*
-                 * Invariants for timers
-                 * ---------------------
-                 * timer list must not be empty at event.
-                 * we have to receive event only on the earliest timer in list
-                */
-                assert(!timers.empty, "timers empty on timer event");
-                /* */
-
-                if ( timers.front._expires <= now) do {
-                    debug tracef("processing %s, lag: %s", timers.front, Clock.currTime - timers.front._expires);
-                    Timer t = timers.front;
+                if ( precise_timers.length > 0 && precise_timers.front._expires <= now) do {
+                    debug(hioselect) safe_tracef("processing %s, lag: %s",
+                        precise_timers.front, Clock.currTime - precise_timers.front._expires);
+                    Timer t = precise_timers.front;
                     HandlerDelegate h = t._handler;
                     try {
                         h(AppEvent.TMO);
@@ -267,11 +295,20 @@ struct FallbackEventLoopImpl {
                     // timer event handler can try to stop exactly this timer,
                     // so when we returned from handler we can have different front
                     // and we do not have to remove it.
-                    if ( !timers.empty && timers.front == t ) {
-                        timers.removeFront;
+                    if ( !precise_timers.empty && precise_timers.front == t ) {
+                        precise_timers.removeFront;
                     }
                     now = Clock.currTime;
-                } while (!timers.empty && timers.front._expires <= now );
+                } while (!precise_timers.empty && precise_timers.front._expires <= now );
+
+                // handlers can install some late timers, so...
+                execute_overdue_timers();
+
+                now = Clock.currTime;
+                if ( !runIndefinitely && now >= deadline ) {
+                    debug(hioselect) safe_tracef("deadline reached");
+                    return;
+                }
             }
             if ( ready > 0 ) {
                 foreach(int fd; 0..numberOfDescriptors) {
@@ -279,13 +316,13 @@ struct FallbackEventLoopImpl {
                     if ( e == AppEvent.NONE ) {
                         continue;
                     }
-                    debug tracef("check %d for %s", fd, fileDescriptors[fd]);
+                    debug(hioselect) safe_tracef("check %d for %s", fd, fileDescriptors[fd]);
                     if ( e & AppEvent.IN && FD_ISSET(fd, &read_fds) ) {
-                        debug tracef("got IN event on file %d", fd);
+                        debug(hioselect) safe_tracef("got IN event on file %d", fd);
                         fileHandlers[fd].eventHandler(fd, AppEvent.IN);
                     }
                     if ( e & AppEvent.OUT && FD_ISSET(fd, &write_fds) ) {
-                        debug tracef("got OUT event on file %d", fd);
+                        debug(hioselect) safe_tracef("got OUT event on file %d", fd);
                         fileHandlers[fd].eventHandler(fd, AppEvent.OUT);
                     }
                 }
@@ -294,34 +331,34 @@ struct FallbackEventLoopImpl {
     }
 
     void start_timer(Timer t) @trusted {
-        debug tracef("insert timer: %s", t);
+        debug(hioselect) safe_tracef("insert timer: %s", t);
         auto d = t._expires - Clock.currTime;
         d = max(d, 0.seconds);
         if ( d == 0.seconds ) {
             overdue ~= t;
             return;
         }
-        timers.insert(t);
+        precise_timers.insert(t);
     }
 
     void stop_timer(Timer t) @trusted {
-        assert(!timers.empty, "You are trying to remove timer %s, but timer list is empty".format(t));
-        debug tracef("remove timer %s", t);
-        auto r = timers.equalRange(t);
-        timers.remove(r);
+        assert(!precise_timers.empty, "You are trying to remove timer %s, but timer list is empty".format(t));
+        debug(hioselect) safe_tracef("remove timer %s", t);
+        auto r = precise_timers.equalRange(t);
+        precise_timers.remove(r);
     }
 
     void start_poll(int fd, AppEvent ev, FileEventHandler h) pure @safe {
         enforce(fd >= 0, "fileno can't be negative");
         enforce(fd < numberOfDescriptors, "Can't use such big fd, recompile with larger numberOfDescriptors");
-        debug tracef("start poll on fd %d for events %s", fd, appeventToString(ev));
+        debug(hioselect) safe_tracef("start poll on fd %d for events %s", fd, appeventToString(ev));
         fileDescriptors[fd]._polling |= ev;
         fileHandlers[fd] = h;
     }
     void stop_poll(int fd, AppEvent ev) @safe {
         enforce(fd >= 0, "fileno can't be negative");
         enforce(fd < numberOfDescriptors, "Can't use such big fd, recompile with larger numberOfDescriptors");
-        debug tracef("stop poll on fd %d for events %s", fd, appeventToString(ev));
+        debug(hioselect) safe_tracef("stop poll on fd %d for events %s", fd, appeventToString(ev));
         fileDescriptors[fd]._polling &= ev ^ AppEvent.ALL;
     }
 
@@ -366,8 +403,8 @@ struct FallbackEventLoopImpl {
     void flush() {
     }
     void start_signal(Signal s) {
-        debug tracef("start signal %s", s);
-        debug tracef("signals: %s", signals);
+        debug(hioselect) safe_tracef("start signal %s", s);
+        debug(hioselect) safe_tracef("signals: %s", signals);
         auto r = s._signum in signals;
         if ( r is null || r.length == 0 ) {
             // enable signal only through kevent
@@ -396,14 +433,14 @@ struct FallbackEventLoopImpl {
         } else {
             *r = new_row;
         }
-        debug tracef("new signals %d row %s", s._signum, new_row);
+        debug(hioselect) safe_tracef("new signals %d row %s", s._signum, new_row);
     }
     void _add_kernel_signal(Signal s) {
         signal(s._signum, &sig_catcher);
-        debug tracef("adding handler for signum %d: %x", s._signum, &this);
+        debug(hioselect) safe_tracef("adding handler for signum %d: %x", s._signum, &this);
     }
     void _del_kernel_signal(Signal s) {
         signal(s._signum, SIG_DFL);
-        debug tracef("deleted handler for signum %d: %x", s._signum, &this);
+        debug(hioselect) safe_tracef("deleted handler for signum %d: %x", s._signum, &this);
     }
 }
