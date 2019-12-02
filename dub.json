@@ -7,7 +7,15 @@
     "license": "proprietary",
     "targetType": "library",
     "dependencies": {
-        "nbuff": "~>0"
+        "nbuff": "~>0",
+	"timingwheels": "*"
     },
+    "configurations": [
+        {
+		"name": "unittest",
+		"debugVersions": ["timingwheels", "hioselect"]
+	}
+    ],
     "libs-posix": ["cares"]
+
 }

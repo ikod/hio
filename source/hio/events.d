@@ -125,7 +125,10 @@ final class Timer {
     bool eq(const Timer b) const pure nothrow @safe {
         return this._id == b._id && this._expires == b._expires && this._handler == b._handler;
     }
-    
+    auto id() pure @nogc nothrow
+    {
+        return _id;
+    }
     this(Duration d, HandlerDelegate h, string f = __FILE__, int l =  __LINE__) @safe {
         if ( d == Duration.max ) {
             _expires = SysTime.max;

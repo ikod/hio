@@ -80,23 +80,28 @@ struct FallbackEventLoopImpl {
     void initialize() @safe nothrow {
         precise_timers = new RedBlackTree!Timer();
         fileHandlers = new FileEventHandler[](1024);
+        timingwheels.init();
     }
     void deinit() @safe {
         precise_timers = null;
     }
     void stop() @safe {
-        debug trace("mark eventloop as stopped");
+        debug(hioselect) safe_tracef("mark eventloop as stopped");
         stopped = true;
     }
 
     private Duration timeUntilNextTimer()
     {
         Duration result = Duration.max;
+        ulong nowRT = Clock.currStdTime;
+
         if ( ! precise_timers.empty )
         {
-            result = min(result, precise_timers.front._expires - Clock.currTime);
+            result = min(result, precise_timers.front._expires - SysTime(nowRT));
         }
-        result = min(result, timingwheels.timeUntilNextEvent(tick));
+        auto nextTWtimer = timingwheels.timeUntilNextEvent(tick, nowRT);
+        debug(hioselect) safe_tracef("prec: %s, timingwheel: %s", result, nextTWtimer);
+        result = min(result, nextTWtimer);
         return result;
     }
     private timeval* _calculate_timeval(Duration d, timeval* tv)
@@ -165,7 +170,7 @@ struct FallbackEventLoopImpl {
             deadline = now + d;
         }
 
-        debug(hioselect) safe_tracef("evl run %s",runIndefinitely? "indefinitely": "for %s".format(d));
+        debug(hioselect) safe_tracef("evl run %s",d);
 
         scope(exit) {
             stopped = false;
@@ -227,6 +232,7 @@ struct FallbackEventLoopImpl {
             immutable untilTimer = timeUntilNextTimer();
             immutable untilDeadline = runIndefinitely ? Duration.max : deadline - Clock.currTime;
             immutable nextStop = min(untilTimer, untilDeadline);
+            debug(hioselect) safe_tracef("untilTimer: %s, untilDeadline: %s", untilTimer, untilDeadline);
             if ( nextStop == Duration.max )
             {
                 wait = null;
@@ -236,9 +242,9 @@ struct FallbackEventLoopImpl {
                 wait = _calculate_timeval(nextStop, &tv);
             }
 
-            //debug(hioselect) safe_tracef("waiting for events %s", wait is null?"forever":"%s".format(*wait));
+            debug(hioselect) safe_tracef("waiting for events %s", wait is null?"forever":"%s".format(*wait));
             auto ready = select(fdmax+1, &read_fds, &write_fds, &err_fds, wait);
-            //debug(hioselect) safe_tracef("returned %d events", ready);
+            debug(hioselect) safe_tracef("returned %d events", ready);
             if ( ready < 0 && errno == EINTR ) {
                 int s_ind;
                 while(s_ind < last_signal_index) {
@@ -265,12 +271,13 @@ struct FallbackEventLoopImpl {
             }
             enforce(ready >= 0);
             if ( ready == 0 ) {
+                ulong nowRT = Clock.currStdTime;
                 // Timedout
                 // check timingweels
-                while(timingwheels.timeUntilNextEvent(tick) <= 0.msecs)
+                auto toCatchUp = timingwheels.ticksToCatchUp(tick, nowRT);
+                if(toCatchUp>0)
                 {
-                    auto ticks = timingwheels.ticksUntilNextEvent();
-                    auto wr = timingwheels.advance(ticks);
+                    auto wr = timingwheels.advance(toCatchUp);
                     foreach(t; wr.timers)
                     {
                         HandlerDelegate h = t._handler;
@@ -332,6 +339,26 @@ struct FallbackEventLoopImpl {
 
     void start_timer(Timer t) @trusted {
         debug(hioselect) safe_tracef("insert timer: %s", t);
+        auto now = Clock.currTime;
+        auto d = t._expires - now;
+        d = max(d, 0.seconds);
+        if ( d == 0.seconds ) {
+            overdue ~= t;
+            return;
+        }
+        ulong twNow = timingwheels.currStdTime(tick);
+        Duration twdelay = (now.stdTime - twNow).hnsecs;
+        debug(hioselect) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
+        timingwheels.schedule(t, (d + twdelay)/tick);
+    }
+
+    void stop_timer(Timer t) @trusted {
+        debug(hioselect) safe_tracef("remove timer %s", t);
+        timingwheels.cancel(t);
+    }
+
+    void start_precise_timer(Timer t) @trusted {
+        debug(hioselect) safe_tracef("insert timer: %s", t);
         auto d = t._expires - Clock.currTime;
         d = max(d, 0.seconds);
         if ( d == 0.seconds ) {
@@ -341,7 +368,7 @@ struct FallbackEventLoopImpl {
         precise_timers.insert(t);
     }
 
-    void stop_timer(Timer t) @trusted {
+    void stop_precise_timer(Timer t) @trusted {
         assert(!precise_timers.empty, "You are trying to remove timer %s, but timer list is empty".format(t));
         debug(hioselect) safe_tracef("remove timer %s", t);
         auto r = precise_timers.equalRange(t);
