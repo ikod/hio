@@ -91,6 +91,7 @@ struct FallbackEventLoopImpl {
     }
 
     private Duration timeUntilNextTimer()
+    out(r;r>=0.seconds)
     {
         Duration result = Duration.max;
         ulong nowRT = Clock.currStdTime;
@@ -100,6 +101,7 @@ struct FallbackEventLoopImpl {
             result = min(result, precise_timers.front._expires - SysTime(nowRT));
         }
         auto nextTWtimer = timingwheels.timeUntilNextEvent(tick, nowRT);
+        nextTWtimer = max(nextTWtimer, 0.seconds);
         debug(hioselect) safe_tracef("prec: %s, timingwheel: %s", result, nextTWtimer);
         result = min(result, nextTWtimer);
         return result;

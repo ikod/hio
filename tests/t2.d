@@ -35,7 +35,7 @@ void client()
 void handler(HioSocket s)
 {
     auto message = s.recv(16, 200.msecs);
-    assert(message.input == "hello".representation);
+    assert(message.input == "hello".representation, "got %s instead of 'hello'(%s)".format(message.input, message));
     s.close();
 }
 
@@ -60,7 +60,7 @@ enum servers = 2;
 
 void main()
 {
-    globalLogLevel = LogLevel.info;
+    globalLogLevel = LogLevel.trace;
     App({
         auto server_socket = new HioSocket();
         server_socket.bind("0.0.0.0:12345");
@@ -70,7 +70,7 @@ void main()
 
         auto client_threads = iota(clients).map!(i => threaded(&client).start).array;
 
-        hlSleep(10.seconds);
+        hlSleep(5.seconds);
 
         client_threads.each!(t => t.stopThreadLoop());
         server_threads.each!(t => t.stopThreadLoop());

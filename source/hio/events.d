@@ -113,6 +113,10 @@ final class Timer {
         immutable HandlerDelegate _handler;
         immutable string          _file;
         immutable int             _line;
+        version(unittest)
+        {
+            Duration              _delay;
+        }
     }
     int opCmp(in Timer other) const nothrow pure @safe {
         int timeCmp = _expires.opCmp(other._expires);
@@ -140,6 +144,10 @@ final class Timer {
         _file = f;
         _line = l;
         timer_id++;
+        version(unittest)
+        {
+            _delay = d;
+        }
     }
     this(SysTime e, HandlerDelegate h, string f = __FILE__, int l =  __LINE__) @safe {
         enforce(e != SysTime.init, "Unintialized expires for new timer");
@@ -152,7 +160,14 @@ final class Timer {
     }
     override string toString() const @trusted {
         import std.format: format;
-        return "timer: expires: %s, id: %d, addr %X (%s:%d)".format(_expires, _id, cast(void*)this, _file, _line);
+        version(unittest)
+        {
+            return "timer: expires: %s(%s), id: %d, addr %X (%s:%d)".format(_expires, _delay, _id, cast(void*)this, _file, _line);
+        }
+        else
+        {
+            return "timer: expires: %s, id: %d, addr %X (%s:%d)".format(_expires, _id, cast(void*)this, _file, _line);
+        }
     }
 }
 

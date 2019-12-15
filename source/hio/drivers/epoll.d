@@ -8,6 +8,7 @@ import std.container;
 import std.exception;
 import std.experimental.logger;
 import std.typecons;
+import std.algorithm: min, max;
 
 import std.experimental.allocator;
 import std.experimental.allocator.mallocator;
@@ -25,6 +26,8 @@ import core.sys.linux.sys.signalfd;
 import core.sys.posix.unistd: close, read;
 import core.sys.posix.time : itimerspec, CLOCK_MONOTONIC , timespec;
 
+import timingwheels;
+
 import hio.events;
 import hio.common;
 
@@ -41,7 +44,9 @@ struct NativeEventLoopImpl {
 
         align(1)                epoll_event[MAXEVENTS] events;
 
-        RedBlackTree!Timer      timers;
+        Duration                tick = 5.msecs;
+        TimingWheels!Timer      timingwheels;
+        RedBlackTree!Timer      precise_timers;
         Timer[]                 overdue;    // timers added with expiration in past
         Signal[][int]           signals;
         //FileHandlerFunction[int] fileHandlers;
@@ -57,16 +62,17 @@ struct NativeEventLoopImpl {
         if ( timer_fd == -1 ) {
             timer_fd = (() @trusted => timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK))();
         }
-        timers = new RedBlackTree!Timer();
+        precise_timers = new RedBlackTree!Timer();
         fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
         GC.addRange(&fileHandlers[0], fileHandlers.length * FileEventHandler.sizeof);
+        timingwheels.init();
     }
     void deinit() @trusted {
         close(epoll_fd);
         epoll_fd = -1;
         close(timer_fd);
         timer_fd = -1;
-        timers = null;
+        precise_timers = null;
         GC.removeRange(&fileHandlers[0]);
         Mallocator.instance.dispose(fileHandlers);
     }
@@ -76,16 +82,38 @@ struct NativeEventLoopImpl {
     }
 
     int _calculate_timeout(SysTime deadline) {
-        Duration delta = deadline - Clock.currTime;
+        auto now_real = Clock.currTime;
+        Duration delta = deadline - now_real;
+        debug(hioepoll) safe_tracef("deadline - now_real: %s", delta);
+        auto nextTWtimer = timingwheels.timeUntilNextEvent(tick, now_real.stdTime);
+        debug(hioepoll) safe_tracef("nextTWtimer: %s", nextTWtimer);
+        delta = min(delta, nextTWtimer);
+
         delta = max(delta, 0.seconds);
         return cast(int)delta.total!"msecs";
+    }
+    private void execute_overdue_timers()
+    {
+        while (overdue.length > 0)
+        {
+            // execute timers which user requested with negative delay
+            Timer t = overdue[0];
+            overdue = overdue[1..$];
+            debug(hioepoll) safe_tracef("execute overdue %s", t);
+            HandlerDelegate h = t._handler;
+            try {
+                h(AppEvent.TMO);
+            } catch (Exception e) {
+                errorf("Uncaught exception: %s", e);
+            }
+        }
     }
     /**
     *
     **/
     void run(Duration d) {
 
-        immutable bool runIndefinitely = (d == Duration.max);
+        immutable bool runInfinitely = (d == Duration.max);
 
         /**
          * eventloop will exit when we reach deadline
@@ -93,7 +121,7 @@ struct NativeEventLoopImpl {
          * which mean we wil run events once
         **/
         SysTime deadline = Clock.currTime + d;
-        debug tracef("evl run %s",runIndefinitely? "infinitely": "for %s".format(d));
+        debug tracef("evl run %s",runInfinitely? "infinitely": "for %s".format(d));
 
         scope ( exit )
         {
@@ -123,31 +151,44 @@ struct NativeEventLoopImpl {
             //    enforce(counter > 0, "Can't clear notificatioinsQueue");
             //}
 
-            while (overdue.length > 0) {
-                // execute timers with requested negative delay
-                Timer t = overdue[0];
-                overdue = overdue[1..$];
-                debug tracef("execute overdue %s", t);
-                HandlerDelegate h = t._handler;
-                try {
-                    h(AppEvent.TMO);
-                } catch (Exception e) {
-                    errorf("Uncaught exception: %s", e);
-                }
-            }
+            execute_overdue_timers();
+
             if (stopped) {
                 break;
             }
 
-            int timeout_ms = runIndefinitely ?
-                -1 :
-                _calculate_timeout(deadline);
+            int timeout_ms = _calculate_timeout(deadline);
 
+            debug(hioepoll) safe_tracef("wait in poll for %s.ms", timeout_ms);
             int ready = epoll_wait(epoll_fd, &events[0], MAXEVENTS, timeout_ms);
+
             debug tracef("got %d events", ready);
             if ( ready == 0 ) {
                 debug trace("epoll timedout and no events to process");
-                return;
+                SysTime now_real = Clock.currTime;
+                // Timedout
+                // check timingweels
+                auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
+                if(toCatchUp>0)
+                {
+                    auto wr = timingwheels.advance(toCatchUp);
+                    foreach(t; wr.timers)
+                    {
+                        HandlerDelegate h = t._handler;
+                        try {
+                            h(AppEvent.TMO);
+                        } catch (Exception e) {
+                            errorf("Uncaught exception: %s", e);
+                        }
+                    }
+                }
+                execute_overdue_timers();
+                if (!runInfinitely && now_real >= deadline)
+                {
+                    debug(hioepoll) safe_tracef("reached deadline, return");
+                    return;
+                }
+                continue;
             }
             if ( ready == -1 && errno == EINTR) {
                 continue;
@@ -174,15 +215,15 @@ struct NativeEventLoopImpl {
                      * timer list must not be empty at event.
                      * we have to receive event only on the earliest timer in list
                     **/
-                    assert(!timers.empty, "timers empty on timer event");
-                    assert(timers.front._expires <= now);
+                    assert(!precise_timers.empty, "timers empty on timer event");
+                    assert(precise_timers.front._expires <= now);
 
                     do {
-                        debug tracef("processing %s, lag: %s", timers.front, Clock.currTime - timers.front._expires);
-                        Timer t = timers.front;
+                        debug tracef("processing %s, lag: %s", precise_timers.front, Clock.currTime - precise_timers.front._expires);
+                        Timer t = precise_timers.front;
                         HandlerDelegate h = t._handler;
-                        timers.removeFront;
-                        if (timers.empty) {
+                        precise_timers.removeFront;
+                        if (precise_timers.empty) {
                             _del_kernel_timer();
                         }
                         try {
@@ -191,12 +232,12 @@ struct NativeEventLoopImpl {
                             errorf("Uncaught exception: %s", e);
                         }
                         now = Clock.currTime;
-                    } while (!timers.empty && timers.front._expires <= now );
+                    } while (!precise_timers.empty && precise_timers.front._expires <= now );
 
-                    if ( ! timers.empty ) {
-                        Duration kernel_delta = timers.front._expires - now;
+                    if ( ! precise_timers.empty ) {
+                        Duration kernel_delta = precise_timers.front._expires - now;
                         assert(kernel_delta > 0.seconds);
-                        _mod_kernel_timer(timers.front, kernel_delta);
+                        _mod_kernel_timer(precise_timers.front, kernel_delta);
                     } else {
                         // delete kernel timer so we can add it next time
                         //_del_kernel_timer();
@@ -262,8 +303,28 @@ struct NativeEventLoopImpl {
         }
     }
     void start_timer(Timer t) @safe {
+        debug(hioepoll) safe_tracef("insert timer: %s", t);
+        auto now = Clock.currTime;
+        auto d = t._expires - now;
+        d = max(d, 0.seconds);
+        if ( d == 0.seconds ) {
+            overdue ~= t;
+            return;
+        }
+        ulong twNow = timingwheels.currStdTime(tick);
+        Duration twdelay = (now.stdTime - twNow).hnsecs;
+        debug(hioselect) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
+        timingwheels.schedule(t, (d + twdelay)/tick);
+    }
+
+    void stop_timer(Timer t) @safe {
+        debug(hioselect) safe_tracef("remove timer %s", t);
+        timingwheels.cancel(t);
+    }
+
+    void start_precise_timer(Timer t) @safe {
         debug tracef("insert timer %s", t);
-        if ( timers.empty || t < timers.front ) {
+        if ( precise_timers.empty || t < precise_timers.front ) {
             auto d = t._expires - Clock.currTime;
             d = max(d, 0.seconds);
             if ( d == 0.seconds ) {
@@ -271,37 +332,37 @@ struct NativeEventLoopImpl {
                 return;
             }
             debug {
-                tracef("timers: %s", timers);
+                tracef("timers: %s", precise_timers);
             }
-            if ( timers.empty ) {
+            if ( precise_timers.empty ) {
                 _add_kernel_timer(t, d);
             } else {
                 _mod_kernel_timer(t, d);
             }
         }
-        timers.insert(t);
+        precise_timers.insert(t);
     }
 
-    void stop_timer(Timer t) @safe {
+    void stop_precise_timer(Timer t) @safe {
         debug tracef("remove timer %s", t);
 
-        if ( t !is timers.front ) {
-            debug tracef("Non front timer: %s", timers);
-            auto r = timers.equalRange(t);
-            timers.remove(r);
+        if ( t !is precise_timers.front ) {
+            debug tracef("Non front timer: %s", precise_timers);
+            auto r = precise_timers.equalRange(t);
+            precise_timers.remove(r);
             return;
         }
 
-        timers.removeFront();
+        precise_timers.removeFront();
         debug trace("we have to del this timer from kernel or set to next");
-        if ( !timers.empty ) {
+        if ( !precise_timers.empty ) {
             // we can change kernel timer to next,
             // If next timer expired - set delta = 0 to run on next loop invocation
             debug trace("set up next timer");
-            auto next = timers.front;
+            auto next = precise_timers.front;
             auto d = next._expires - Clock.currTime;
             d = max(d, 0.seconds);
-            _mod_kernel_timer(timers.front, d);
+            _mod_kernel_timer(precise_timers.front, d);
             return;
         }
         debug trace("remove last timer");

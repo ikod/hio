@@ -231,7 +231,6 @@ unittest {
         Thread.sleep(45.msecs);
         loop.run(0.seconds);
         assert(i1==1, "i1 expected 1, got %d".format(i1));
-        globalLogLevel = LogLevel.info;
 
         info("testing overdue timers");
         int[]   seq;
@@ -250,7 +249,6 @@ unittest {
 
         assert(seq == [1,2,2]);
 
-        //globalLogLevel = LogLevel.trace;
         seq = new int[](0);
         /** test setting overdue timer inside from overdue timer **/
         auto set_next = delegate void(AppEvent e) {

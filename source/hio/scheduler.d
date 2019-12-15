@@ -774,20 +774,32 @@ unittest
 {
     import core.memory;
     // create lot of "daemon" tasks to check how they will survive GC collection.
+    // 2019-12-01T22:38:53.301 [info] scheduler.d:783:__lambda2  create 10000 tasks
+    // 2019-12-01T22:38:55.731 [info] scheduler.d:856:__unittest_L840_C1 test1 ok in FALLBACK mode
+    enum tasks = 10_000;
+    int N;
     void t0(int i) {
         if (i%5==0)
             hlSleep((i%1000).msecs);
+        N++;
+        if (N==tasks)
+        {
+            getDefaultLoop().stop();
+        }
     }
     App({
-        enum tasks = 10_000;
         infof(" create %d tasks", tasks);
         iota(tasks).each!((int i){
             auto t = task(&t0, i);
             t.start();
         });
         GC.collect();
+        infof(" created, sleep and let all timers to expire");
+//        globalLogLevel = LogLevel.trace;
         hlSleep(2.seconds);
     });
+    assert(N==tasks);
+    info("done");
 }
 // unittest {
 //     //
