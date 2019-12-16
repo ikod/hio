@@ -163,38 +163,39 @@ struct NativeEventLoopImpl {
             int ready = epoll_wait(epoll_fd, &events[0], MAXEVENTS, timeout_ms);
 
             debug tracef("got %d events", ready);
-            if ( ready == 0 ) {
-                debug trace("epoll timedout and no events to process");
-                SysTime now_real = Clock.currTime;
-                // Timedout
-                // check timingweels
-                auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
-                if(toCatchUp>0)
+
+            SysTime now_real = Clock.currTime;
+            // Timedout
+            // check timingweels
+            auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
+            if(toCatchUp>0)
+            {
+                auto wr = timingwheels.advance(toCatchUp);
+                foreach(t; wr.timers)
                 {
-                    auto wr = timingwheels.advance(toCatchUp);
-                    foreach(t; wr.timers)
-                    {
-                        HandlerDelegate h = t._handler;
-                        try {
-                            h(AppEvent.TMO);
-                        } catch (Exception e) {
-                            errorf("Uncaught exception: %s", e);
-                        }
+                    HandlerDelegate h = t._handler;
+                    try {
+                        h(AppEvent.TMO);
+                    } catch (Exception e) {
+                        errorf("Uncaught exception: %s", e);
                     }
                 }
-                execute_overdue_timers();
-                if (!runInfinitely && now_real >= deadline)
-                {
-                    debug(hioepoll) safe_tracef("reached deadline, return");
-                    return;
-                }
-                continue;
+            }
+            execute_overdue_timers();
+            if (!runInfinitely && now_real >= deadline)
+            {
+                debug(hioepoll) safe_tracef("reached deadline, return");
+                return;
             }
             if ( ready == -1 && errno == EINTR) {
                 continue;
             }
             if ( ready < 0 ) {
                 errorf("epoll_wait returned error %s", fromStringz(strerror(errno)));
+            }
+            if (ready == 0) 
+            {
+                continue;
             }
             enforce(ready >= 0);
             debug tracef("events: %s", events[0..ready]);
@@ -203,47 +204,47 @@ struct NativeEventLoopImpl {
                 debug tracef("got event %s", e);
                 int fd = e.data.fd;
 
-                if ( fd == timer_fd ) {
-                    // with EPOLLET flag I dont have to read from timerfd, otherwise I have to:
-                    // ubyte[8] v;
-                    // auto tfdr = read(timer_fd, &v[0], 8);
-                    debug tracef("timer event");
-                    auto now = Clock.currTime;
-                    /*
-                     * Invariants for timers
-                     * ---------------------
-                     * timer list must not be empty at event.
-                     * we have to receive event only on the earliest timer in list
-                    **/
-                    assert(!precise_timers.empty, "timers empty on timer event");
-                    assert(precise_timers.front._expires <= now);
+                // if ( fd == timer_fd ) {
+                //     // with EPOLLET flag I dont have to read from timerfd, otherwise I have to:
+                //     // ubyte[8] v;
+                //     // auto tfdr = read(timer_fd, &v[0], 8);
+                //     debug tracef("timer event");
+                //     auto now = Clock.currTime;
+                //     /*
+                //      * Invariants for timers
+                //      * ---------------------
+                //      * timer list must not be empty at event.
+                //      * we have to receive event only on the earliest timer in list
+                //     **/
+                //     assert(!precise_timers.empty, "timers empty on timer event");
+                //     assert(precise_timers.front._expires <= now);
 
-                    do {
-                        debug tracef("processing %s, lag: %s", precise_timers.front, Clock.currTime - precise_timers.front._expires);
-                        Timer t = precise_timers.front;
-                        HandlerDelegate h = t._handler;
-                        precise_timers.removeFront;
-                        if (precise_timers.empty) {
-                            _del_kernel_timer();
-                        }
-                        try {
-                            h(AppEvent.TMO);
-                        } catch (Exception e) {
-                            errorf("Uncaught exception: %s", e);
-                        }
-                        now = Clock.currTime;
-                    } while (!precise_timers.empty && precise_timers.front._expires <= now );
+                //     do {
+                //         debug tracef("processing %s, lag: %s", precise_timers.front, Clock.currTime - precise_timers.front._expires);
+                //         Timer t = precise_timers.front;
+                //         HandlerDelegate h = t._handler;
+                //         precise_timers.removeFront;
+                //         if (precise_timers.empty) {
+                //             _del_kernel_timer();
+                //         }
+                //         try {
+                //             h(AppEvent.TMO);
+                //         } catch (Exception e) {
+                //             errorf("Uncaught exception: %s", e);
+                //         }
+                //         now = Clock.currTime;
+                //     } while (!precise_timers.empty && precise_timers.front._expires <= now );
 
-                    if ( ! precise_timers.empty ) {
-                        Duration kernel_delta = precise_timers.front._expires - now;
-                        assert(kernel_delta > 0.seconds);
-                        _mod_kernel_timer(precise_timers.front, kernel_delta);
-                    } else {
-                        // delete kernel timer so we can add it next time
-                        //_del_kernel_timer();
-                    }
-                    continue;
-                }
+                //     if ( ! precise_timers.empty ) {
+                //         Duration kernel_delta = precise_timers.front._expires - now;
+                //         assert(kernel_delta > 0.seconds);
+                //         _mod_kernel_timer(precise_timers.front, kernel_delta);
+                //     } else {
+                //         // delete kernel timer so we can add it next time
+                //         //_del_kernel_timer();
+                //     }
+                //     continue;
+                // }
                 if ( fd == signal_fd ) {
                     enum siginfo_items = 8;
                     signalfd_siginfo[siginfo_items] info;
