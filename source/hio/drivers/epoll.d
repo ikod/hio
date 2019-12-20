@@ -46,7 +46,7 @@ struct NativeEventLoopImpl {
 
         Duration                tick = 5.msecs;
         TimingWheels!Timer      timingwheels;
-        RedBlackTree!Timer      precise_timers;
+        //RedBlackTree!Timer      precise_timers;
         Timer[]                 overdue;    // timers added with expiration in past
         Signal[][int]           signals;
         //FileHandlerFunction[int] fileHandlers;
@@ -62,7 +62,7 @@ struct NativeEventLoopImpl {
         if ( timer_fd == -1 ) {
             timer_fd = (() @trusted => timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK))();
         }
-        precise_timers = new RedBlackTree!Timer();
+        //precise_timers = new RedBlackTree!Timer();
         fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
         GC.addRange(&fileHandlers[0], fileHandlers.length * FileEventHandler.sizeof);
         timingwheels.init();
@@ -72,7 +72,7 @@ struct NativeEventLoopImpl {
         epoll_fd = -1;
         close(timer_fd);
         timer_fd = -1;
-        precise_timers = null;
+        //precise_timers = null;
         GC.removeRange(&fileHandlers[0]);
         Mallocator.instance.dispose(fileHandlers);
     }
@@ -151,7 +151,7 @@ struct NativeEventLoopImpl {
             //    enforce(counter > 0, "Can't clear notificatioinsQueue");
             //}
 
-            execute_overdue_timers();
+            //execute_overdue_timers();
 
             if (stopped) {
                 break;
@@ -165,40 +165,38 @@ struct NativeEventLoopImpl {
             debug tracef("got %d events", ready);
 
             SysTime now_real = Clock.currTime;
-            // Timedout
-            // check timingweels
-            auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
-            if(toCatchUp>0)
-            {
-                auto wr = timingwheels.advance(toCatchUp);
-                foreach(t; wr.timers)
-                {
-                    HandlerDelegate h = t._handler;
-                    try {
-                        h(AppEvent.TMO);
-                    } catch (Exception e) {
-                        errorf("Uncaught exception: %s", e);
-                    }
-                }
-            }
-            execute_overdue_timers();
-            if (!runInfinitely && now_real >= deadline)
-            {
-                debug(hioepoll) safe_tracef("reached deadline, return");
-                return;
-            }
+            // // check timingweels
+            // auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
+            // if(toCatchUp>0)
+            // {
+            //     auto wr = timingwheels.advance(toCatchUp);
+            //     foreach(t; wr.timers)
+            //     {
+            //         HandlerDelegate h = t._handler;
+            //         try {
+            //             h(AppEvent.TMO);
+            //         } catch (Exception e) {
+            //             errorf("Uncaught exception: %s", e);
+            //         }
+            //     }
+            // }
+            // execute_overdue_timers();
+            // if (!runInfinitely && now_real >= deadline)
+            // {
+            //     debug(hioepoll) safe_tracef("reached deadline, return");
+            //     return;
+            // }
             if ( ready == -1 && errno == EINTR) {
                 continue;
             }
             if ( ready < 0 ) {
                 errorf("epoll_wait returned error %s", fromStringz(strerror(errno)));
             }
-            if (ready == 0) 
-            {
-                continue;
-            }
-            enforce(ready >= 0);
-            debug tracef("events: %s", events[0..ready]);
+            // if (ready == 0) 
+            // {
+            //     continue;
+            // }
+            debug(hioepoll) tracef("events: %s", events[0..ready]);
             foreach(i; 0..ready) {
                 auto e = events[i];
                 debug tracef("got event %s", e);
@@ -301,6 +299,26 @@ struct NativeEventLoopImpl {
                 //AppEvent appEvent = AppEvent(sysEventToAppEvent(e.events), -1);
                 //h(appEvent);
             }
+            auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
+            if(toCatchUp>0)
+            {
+                auto wr = timingwheels.advance(toCatchUp);
+                foreach(t; wr.timers)
+                {
+                    HandlerDelegate h = t._handler;
+                    try {
+                        h(AppEvent.TMO);
+                    } catch (Exception e) {
+                        errorf("Uncaught exception: %s", e);
+                    }
+                }
+            }
+            execute_overdue_timers();
+            if (!runInfinitely && now_real >= deadline)
+            {
+                debug(hioepoll) safe_tracef("reached deadline, return");
+                return;
+            }
         }
     }
     void start_timer(Timer t) @safe {
@@ -323,52 +341,52 @@ struct NativeEventLoopImpl {
         timingwheels.cancel(t);
     }
 
-    void start_precise_timer(Timer t) @safe {
-        debug tracef("insert timer %s", t);
-        if ( precise_timers.empty || t < precise_timers.front ) {
-            auto d = t._expires - Clock.currTime;
-            d = max(d, 0.seconds);
-            if ( d == 0.seconds ) {
-                overdue ~= t;
-                return;
-            }
-            debug {
-                tracef("timers: %s", precise_timers);
-            }
-            if ( precise_timers.empty ) {
-                _add_kernel_timer(t, d);
-            } else {
-                _mod_kernel_timer(t, d);
-            }
-        }
-        precise_timers.insert(t);
-    }
+    // void start_precise_timer(Timer t) @safe {
+    //     debug tracef("insert timer %s", t);
+    //     if ( precise_timers.empty || t < precise_timers.front ) {
+    //         auto d = t._expires - Clock.currTime;
+    //         d = max(d, 0.seconds);
+    //         if ( d == 0.seconds ) {
+    //             overdue ~= t;
+    //             return;
+    //         }
+    //         debug {
+    //             tracef("timers: %s", precise_timers);
+    //         }
+    //         if ( precise_timers.empty ) {
+    //             _add_kernel_timer(t, d);
+    //         } else {
+    //             _mod_kernel_timer(t, d);
+    //         }
+    //     }
+    //     precise_timers.insert(t);
+    // }
 
-    void stop_precise_timer(Timer t) @safe {
-        debug tracef("remove timer %s", t);
+    // void stop_precise_timer(Timer t) @safe {
+    //     debug tracef("remove timer %s", t);
 
-        if ( t !is precise_timers.front ) {
-            debug tracef("Non front timer: %s", precise_timers);
-            auto r = precise_timers.equalRange(t);
-            precise_timers.remove(r);
-            return;
-        }
+    //     if ( t !is precise_timers.front ) {
+    //         debug tracef("Non front timer: %s", precise_timers);
+    //         auto r = precise_timers.equalRange(t);
+    //         precise_timers.remove(r);
+    //         return;
+    //     }
 
-        precise_timers.removeFront();
-        debug trace("we have to del this timer from kernel or set to next");
-        if ( !precise_timers.empty ) {
-            // we can change kernel timer to next,
-            // If next timer expired - set delta = 0 to run on next loop invocation
-            debug trace("set up next timer");
-            auto next = precise_timers.front;
-            auto d = next._expires - Clock.currTime;
-            d = max(d, 0.seconds);
-            _mod_kernel_timer(precise_timers.front, d);
-            return;
-        }
-        debug trace("remove last timer");
-        _del_kernel_timer();
-    }
+    //     precise_timers.removeFront();
+    //     debug trace("we have to del this timer from kernel or set to next");
+    //     if ( !precise_timers.empty ) {
+    //         // we can change kernel timer to next,
+    //         // If next timer expired - set delta = 0 to run on next loop invocation
+    //         debug trace("set up next timer");
+    //         auto next = precise_timers.front;
+    //         auto d = next._expires - Clock.currTime;
+    //         d = max(d, 0.seconds);
+    //         _mod_kernel_timer(precise_timers.front, d);
+    //         return;
+    //     }
+    //     debug trace("remove last timer");
+    //     _del_kernel_timer();
+    // }
 
     void _add_kernel_timer(Timer t, in Duration d) @trusted {
         debug trace("add kernel timer");

@@ -1,7 +1,6 @@
 /+ dub.sdl:
     name "t2"
     dflags "-I../source"
-    dflags "-debug"
     lflags "-lcares"
     dependency "hio" version="*"
 +/
@@ -21,7 +20,7 @@ import hio.scheduler;
 
 shared int ops;
 
-void client()
+void client_task()
 {
     while(true)
     {
@@ -30,6 +29,14 @@ void client()
         s.send("hello".representation, 1.seconds);
         s.close();
     }
+}
+
+void client_thread()
+{
+    enum client_tasks = 16;
+    auto tasks = iota(client_tasks).map!(i => task(&client_task)).array;
+    tasks.each!(t => t.start());
+    tasks.each!(t => t.wait());
 }
 
 void handler(HioSocket s)
@@ -50,12 +57,11 @@ void server(int so, int n)
     {
         auto client_socket = sock.accept();
         ops.atomicOp!"+="(1);
-        //infof("accept %d", n);
         task(&handler, client_socket).start;
     }
 }
 
-enum clients = 4;
+enum clients = 2;
 enum servers = 2;
 
 void main()
@@ -64,16 +70,20 @@ void main()
     App({
         auto server_socket = new HioSocket();
         server_socket.bind("0.0.0.0:12345");
-        server_socket.listen(100);
+        server_socket.listen(2048);
 
         auto server_threads = iota(servers).map!(i => threaded(&server, server_socket.fileno, i).start).array;
 
-        auto client_threads = iota(clients).map!(i => threaded(&client).start).array;
+        auto client_threads = iota(clients).map!(i => threaded(&client_thread).start).array;
 
         hlSleep(10.seconds);
 
         client_threads.each!(t => t.stopThreadLoop());
         server_threads.each!(t => t.stopThreadLoop());
+
+        client_threads.each!(t => t.wait());
+        server_threads.each!(t => t.wait());
+
         server_socket.close();
         infof("done %d", ops);
     });
