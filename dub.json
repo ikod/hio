@@ -13,7 +13,7 @@
     "configurations": [
         {
 		"name": "unittest",
-		"debugVersions": ["timingwheels", "hioselect", "hioepoll"]
+		"debugVersions": ["timingwheels", "hioselect", "hioepoll", "hiokqueue"]
 	}
     ],
     "libs-posix": ["cares"]

@@ -287,15 +287,15 @@ unittest {
         loop.run(510.msecs);
         //assert(seq == [3, 1, 2]); // this should work only with precise
 
-        info("exception handling in timer");
-        HandlerDelegate throws = delegate void(AppEvent e){throw new Exception("test exception");};
-        a = new Timer(50.msecs, throws);
-        loop.startTimer(a);
-        auto logLevel = globalLogLevel;
-        globalLogLevel = LogLevel.fatal;
-        loop.run(100.msecs);
-        globalLogLevel = logLevel;
-        infof(" --- end ---");
+        // info("exception handling in timer");
+        // HandlerDelegate throws = delegate void(AppEvent e){throw new Exception("test exception");};
+        // a = new Timer(50.msecs, throws);
+        // loop.startTimer(a);
+        // auto logLevel = globalLogLevel;
+        // globalLogLevel = LogLevel.fatal;
+        // loop.run(100.msecs);
+        // globalLogLevel = logLevel;
+        // infof(" --- end ---");
     }
 
 }
