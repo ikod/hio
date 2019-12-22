@@ -771,10 +771,10 @@ unittest
         if (i%5==0)
             hlSleep((i%1000).msecs);
         N++;
-        if (N==tasks)
-        {
-            getDefaultLoop().stop();
-        }
+        // if (N==tasks)
+        // {
+        //     getDefaultLoop().stop();
+        // }
     }
     App({
         infof(" create %d tasks", tasks);

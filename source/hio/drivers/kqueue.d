@@ -2,6 +2,7 @@ module hio.drivers.kqueue;
 
 version(OSX):
 
+import std.algorithm;
 import std.datetime;
 import std.conv;
 import std.string;
@@ -25,6 +26,8 @@ import core.sys.posix.signal;
 import core.stdc.stdint : intptr_t, uintptr_t;
 import core.stdc.string: strerror;
 import core.stdc.errno: errno;
+
+import timingwheels;
 
 import hio.events;
 import hio.common;
@@ -89,26 +92,24 @@ struct NativeEventLoopImpl {
         kevent_t[MAXEVENTS]     in_events;
         kevent_t[MAXEVENTS]     out_events;
 
-        RedBlackTree!Timer      timers;    // this is timers contaiers
+        Duration                tick = 5.msecs;
+        TimingWheels!Timer      timingwheels;
         Timer[]                 overdue;   // timers added with expiration in past placed here
 
         Signal[][int]           signals;   // this is signals container
 
         FileEventHandler[]      fileHandlers;
 
-//        CircBuff!NotificationDelivery
-//                                notificationsQueue;
-
-        //HandlerDelegate[]       userEventHandlers;
     }
-    void initialize() @trusted nothrow {
+    void initialize() @trusted nothrow
+    {
         if ( kqueue_fd == -1) {
             kqueue_fd = kqueue();
         }
-        debug try{tracef("kqueue_fd=%d", kqueue_fd);}catch(Exception e){}
-        timers = new RedBlackTree!Timer();
+        debug(hiokqueue) safe_tracef("kqueue_fd=%d", kqueue_fd);
         fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
         GC.addRange(fileHandlers.ptr, fileHandlers.length*FileEventHandler.sizeof);
+        timingwheels.init();
     }
     void deinit() @trusted {
         debug tracef("deinit");
@@ -118,10 +119,8 @@ struct NativeEventLoopImpl {
             kqueue_fd = -1;
         }
         in_index = 0;
-        timers = null;
         GC.removeRange(&fileHandlers[0]);
         Mallocator.instance.dispose(fileHandlers);
-        //Mallocator.instance.dispose(userEventHandlers);
     }
     int get_kernel_id() pure @safe nothrow @nogc {
         return kqueue_fd;
@@ -133,23 +132,52 @@ struct NativeEventLoopImpl {
 
     timespec _calculate_timespec(SysTime deadline) @safe {
         timespec ts;
-        Duration delta = deadline - Clock.currTime;
+
+        auto now_real = Clock.currTime;
+        Duration delta = deadline - now_real;
+        debug(hiokqueue) safe_tracef("deadline - now_real: %s", delta);
+        auto nextTWtimer = timingwheels.timeUntilNextEvent(tick, now_real.stdTime);
+        debug(hiokqueue) safe_tracef("nextTWtimer: %s", nextTWtimer);
+        delta = min(delta, nextTWtimer);
+
         delta = max(delta, 0.seconds);
-        debug tracef("delta = %s", delta);
+
+        debug(hiokqueue) safe_tracef("delta = %s", delta);
         auto ds = delta.split!("seconds", "nsecs");
         ts.tv_sec = cast(typeof(timespec.tv_sec))ds.seconds;
         ts.tv_nsec = cast(typeof(timespec.tv_nsec))ds.nsecs;
         return ts;
     }
 
+    private void execute_overdue_timers() @safe
+    {
+        while (overdue.length > 0)
+        {
+            // execute timers which user requested with negative delay
+            Timer t = overdue[0];
+            overdue = overdue[1..$];
+            debug(hioepoll) safe_tracef("execute overdue %s", t);
+            HandlerDelegate h = t._handler;
+            try {
+                h(AppEvent.TMO);
+            } catch (Exception e) {
+                throw e;
+                //errorf("Uncaught exception: %s", e);
+            }
+        }
+    }
+
     void run(Duration d) @safe {
 
         immutable bool runInfinitely = (d == Duration.max);
         SysTime     deadline;
-        timespec*   wait;
 
         if ( !runInfinitely ) {
             deadline = Clock.currTime + d;
+        }
+        else
+        {
+            deadline = SysTime.max;
         }
 
         debug tracef("evl run for %s", d);
@@ -158,49 +186,24 @@ struct NativeEventLoopImpl {
             stopped = false;
         }
 
-        while(!stopped) {
-            //
-            // handle user events(notifications)
-            //
-            //auto counter = notificationsQueue.Size * 10;
-            //while(!notificationsQueue.empty){
-            //    auto nd = notificationsQueue.get();
-            //    Notification n = nd._n;
-            //    Broadcast b = nd._broadcast;
-             //   n.handler(b);
-            //    counter--;
-            //    enforce(counter > 0, "Can't clear notificatioinsQueue");
-           // }
-            //
+        while(!stopped)
+        {
             // handle overdue timers
-            //
-            while (overdue.length > 0) {
-                // execute timers which user requested with negative delay
-                Timer t = overdue[0];
-                overdue = overdue[1..$];
-                debug tracef("execute overdue %s", t);
-                HandlerDelegate h = t._handler;
-                try {
-                    h(AppEvent.TMO);
-                } catch (Exception e) {
-                    errorf("Uncaught exception: %s", e.msg);
-                }
-            }
+            execute_overdue_timers();
+
             if (stopped) {
                 break;
             } 
             ts = _calculate_timespec(deadline);
 
-            wait = runInfinitely ?
-                      null
-                    : &ts;
+            debug(hiokqueue) safe_tracef("waiting for %s", ts);
+            debug(hiokqueue) safe_tracef("waiting events %s", in_events[0..in_index]);
 
-            debug tracef("waiting for %s", wait is null?"forever":"%s".format(*wait));
-            debug tracef("waiting events %s", in_events[0..in_index]);
             ready = s_kevent(kqueue_fd,
                                 cast(kevent_t*)&in_events[0], in_index,
                                 cast(kevent_t*)&out_events[0], MAXEVENTS,
-                                wait);
+                                &ts);
+            SysTime now_real = Clock.currTime;
             in_index = 0;
             debug tracef("kevent returned %d events", ready);
             debug tracef("");
@@ -208,11 +211,6 @@ struct NativeEventLoopImpl {
 
             if ( ready < 0 ) {
                 error("kevent returned error %s".format(s_strerror(errno)));
-            }
-            enforce(ready >= 0);
-            if ( ready == 0 ) {
-                debug trace("kevent timedout and no events to process");
-                return;
             }
             //
             // handle kernel events
@@ -249,53 +247,6 @@ struct NativeEventLoopImpl {
                         int fd = cast(int)e.ident;
                         fileHandlers[fd].eventHandler(cast(int)e.ident, ae);
                         continue;
-                    case EVFILT_TIMER:
-                        /*
-                         * Invariants for timers
-                         * ---------------------
-                         * timer list must not be empty at event.
-                         * we have to receive event only on the earliest timer in list
-                        */
-                        assert(!timers.empty, "timers empty on timer event: %s".format(out_events[0..ready]));
-                        enforce((e.flags & EV_ERROR) == 0, "Timer errno: %d".format(e.data));
-
-                        if ( udataToTimer(e.udata) !is timers.front) {
-                            errorf("timer event: %s != timers.front: %s", udataToTimer(e.udata), timers.front);
-                            //errorf("timers=%s", to!string(timers));
-                            errorf("events=%s", out_events[0..ready]);
-                            assert(0);
-                        }
-                        /* */
-
-                        auto now = Clock.currTime;
-
-                        do {
-                            debug tracef("processing %s, lag: %s", timers.front, Clock.currTime - timers.front._expires);
-                            Timer t = timers.front;
-                            HandlerDelegate h = t._handler;
-                            try {
-                                h(AppEvent.TMO);
-                            } catch (Exception e) {
-                                errorf("Uncaught exception: %s", e.msg);
-                            }
-                            // timer event handler can try to stop exactly this timer,
-                            // so when we returned from handler we can have different front
-                            // and we do not have to remove it.
-                            if ( !timers.empty && timers.front is t ) {
-                                timers.removeFront;
-                            }
-                            now = Clock.currTime;
-                        } while (!timers.empty && timers.front._expires <= now );
-
-                        if ( ! timers.empty ) {
-                            Duration kernel_delta = timers.front._expires - now;
-                            assert(kernel_delta > 0.seconds);
-                            _mod_kernel_timer(timers.front, kernel_delta);
-                        } else {
-                            // kqueue do not require deletion here
-                        }
-
-                        continue;
                     case EVFILT_SIGNAL:
                         assert(signals.length != 0);
                         auto signum = cast(int)e.ident;
@@ -318,106 +269,62 @@ struct NativeEventLoopImpl {
                         break;
                 }
             }
+            auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
+            if(toCatchUp>0)
+            {
+                auto wr = timingwheels.advance(toCatchUp);
+                foreach(t; wr.timers)
+                {
+                    HandlerDelegate h = t._handler;
+                    try {
+                        h(AppEvent.TMO);
+                    } catch (Exception e) {
+                        throw e;
+                        //errorf("Uncaught exception: %s", e);
+                    }
+                }
+            }
+            execute_overdue_timers();
+            if (!runInfinitely && now_real >= deadline)
+            {
+                debug(hioepoll) safe_tracef("reached deadline, return");
+                return;
+            }
         }
     }
 
     void start_timer(Timer t) @trusted {
-        debug tracef("insert timer %s - %X", t, cast(void*)t);
-        if ( timers.empty || t < timers.front ) {
-            auto d = t._expires - Clock.currTime;
-            d = max(d, 0.seconds);
-            if ( d == 0.seconds ) {
-                overdue ~= t;
-                return;
-            }
-            if ( timers.empty ) {
-                _add_kernel_timer(t, d);
-            } else {
-                _mod_kernel_timer(t, d);
-            }
-        }
-        timers.insert(t);
-    }
-
-    bool timer_cleared_from_out_events(kevent_t e) @safe pure nothrow @nogc {
-        foreach(ref o; out_events[0..ready]) {
-            if ( o.ident == e.ident && o.filter == e.filter && o.udata == e.udata ) {
-                o.ident = 0;
-                o.filter = 0;
-                o.udata = null;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void stop_timer(Timer t) @trusted {
-
-        assert(!timers.empty, "You are trying to remove timer %s, but timer list is empty".format(t));
-
-        debug tracef("timers: %s", timers);
-        if ( t != timers.front ) {
-            debug tracef("remove non-front %s", t);
-            auto r = timers.equalRange(t);
-            timers.remove(r);
-            return;
-        }
-
-        kevent_t e;
-        e.ident = 0;
-        e.filter = EVFILT_TIMER;
-        e.udata = cast(void*)t;
-        auto cleared = timer_cleared_from_out_events(e);
-
-        timers.removeFront();
-        if ( timers.empty ) {
-            if ( cleared ) {
-                debug tracef("return because it is cleared");
-                return;
-            }
-            debug tracef("we have to del this timer from kernel");
-            _del_kernel_timer();
-            return;
-        }
-        debug tracef("we have to set timer to next: %s, %s", out_events[0..ready], timers);
-        // we can change kernel timer to next,
-        // If next timer expired - set delta = 0 to run on next loop invocation
-        auto next = timers.front;
-        auto d = next._expires - Clock.currTime;
+        debug(hiokqueue) safe_tracef("insert timer: %s", t);
+        auto now = Clock.currTime;
+        auto d = t._expires - now;
         d = max(d, 0.seconds);
-        _mod_kernel_timer(timers.front, d);
-        return;
+        if ( d == 0.seconds ) {
+            overdue ~= t;
+            return;
+        }
+        ulong twNow = timingwheels.currStdTime(tick);
+        Duration twdelay = (now.stdTime - twNow).hnsecs;
+        debug(hiokqueue) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
+        timingwheels.schedule(t, (d + twdelay)/tick);
     }
 
-//    pragma(inline, true)
-//    void processNotification(Notification ue, Broadcast broadcast) @safe {
-//        ue.handler();
-//    }
+    // bool timer_cleared_from_out_events(kevent_t e) @safe pure nothrow @nogc {
+    //     foreach(ref o; out_events[0..ready]) {
+    //         if ( o.ident == e.ident && o.filter == e.filter && o.udata == e.udata ) {
+    //             o.ident = 0;
+    //             o.filter = 0;
+    //             o.udata = null;
+    //             return true;
+    //         }
+    //     }
+    //     return false;
+    // }
 
-//    void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
-//        debug trace("posting notification");
-//        if ( !notificationsQueue.full )
-//        {
-//            debug trace("put notification");
-//            notificationsQueue.put(NotificationDelivery(notification, broadcast));
-//            debug trace("put notification done");
-//            return;
-//        }
-//        // now try to find space for next notification
-//        auto retries = 10 * notificationsQueue.Size;
-//        while(notificationsQueue.full && retries > 0)
-//        {
-//            retries--;
-//            auto nd = notificationsQueue.get();
-//            Notification _n = nd._n;
-//            Broadcast _b = nd._broadcast;
-//            processNotification(_n, _b);
-//        }
-//        enforce(!notificationsQueue.full, "Can't clear space for next notification in notificatioinsQueue");
-//        notificationsQueue.put(NotificationDelivery(notification, broadcast));
-//        debug trace("posting notification - done");
-//    }
-//
+    void stop_timer(Timer t) @safe {
+        debug(hiokqueue) safe_tracef("remove timer %s", t);
+        timingwheels.cancel(t);
+    }
+
     void flush() @trusted {
         if ( in_index == 0 ) {
             return;

@@ -332,12 +332,12 @@ struct NativeEventLoopImpl {
         }
         ulong twNow = timingwheels.currStdTime(tick);
         Duration twdelay = (now.stdTime - twNow).hnsecs;
-        debug(hioselect) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
+        debug(hioepoll) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
         timingwheels.schedule(t, (d + twdelay)/tick);
     }
 
     void stop_timer(Timer t) @safe {
-        debug(hioselect) safe_tracef("remove timer %s", t);
+        debug(hioepoll) safe_tracef("remove timer %s", t);
         timingwheels.cancel(t);
     }
 
