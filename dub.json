@@ -10,11 +10,20 @@
         "nbuff": "~>0",
 	"timingwheels": "*"
     },
+    "buildTypes": {
+        "release": {
+            "buildOptions": ["releaseMode", "optimize", "inline"],
+            "debugVersions": []
+        }
+    },
     "configurations": [
         {
-		"name": "unittest",
-		"debugVersions": ["timingwheels", "hioselect", "hioepoll"]
-	}
+            "name": "library"
+        },
+        {
+            "name": "unittest",
+            "debugVersions": ["timingwheels", "hioselect", "hioepoll"]
+        }
     ],
     "libs-posix": ["cares"]
 

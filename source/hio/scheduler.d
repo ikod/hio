@@ -517,18 +517,18 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     final auto run() {
         class CommandsHandler : FileEventHandler
         {
-            override void eventHandler(int fd, AppEvent e) @trusted
+            override void eventHandler(int fd, AppEvent e)
             {
                 assert(fd == _commands[0]);
                 auto b = _commands.read(0, 1);
                 final switch(b[0])
                 {
                     case Commands.StopLoop:
-                        debug tracef("got stopLoop command");
+                        debug safe_tracef("got stopLoop command");
                         getDefaultLoop.stop();
                         break;
                     case Commands.WakeUpLoop:
-                        debug tracef("got WakeUpLoop command");
+                        debug safe_tracef("got WakeUpLoop command");
                         break;
                 }
             }
@@ -539,7 +539,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 uninitializeLoops();
                 getDefaultLoop.startPoll(_commands[0], AppEvent.IN, new CommandsHandler());
                 try {
-                    debug trace("calling");
+                    debug safe_tracef("calling");
                     static if (!Void) {
                         _box._data = App(_f, _args);
                     }
@@ -600,17 +600,6 @@ class Task(F, A...) : Fiber, Computation if (isCallable!F) {
     /// wait(Duration) - wait with timeout
     /// 
     override bool wait(Duration timeout = Duration.max) {
-        //if ( state == Fiber.State.TERM )
-        //{
-        //    throw new Exception("You can't wait on finished task");
-        //}
-        // if ( _ready )
-        // {
-        //     if ( _exception !is null ) {
-        //         throw _exception;
-        //     }
-        //     return true;
-        // }
         if ( _ready || timeout <= 0.msecs )
         {
             if ( _exception !is null ) {
