@@ -10,7 +10,7 @@ import std.format;
 
 import hio.common;
 
-//import nbuff;
+import nbuff;
 
 enum AppEvent : int {
     NONE = 0x00,
@@ -199,15 +199,14 @@ final class Signal {
 struct IORequest {
     size_t              to_read = 0;
     bool                allowPartialInput = true;
-    immutable(ubyte)[]  output;
+    NbuffChunk          output;
 
     void delegate(IOResult) @safe callback;
-
 }
 
 struct IOResult {
-    immutable(ubyte)[]  input;      // what we received
-    immutable(ubyte)[]  output;     // updated output slice
+    NbuffChunk          input;
+    NbuffChunk          output;     // updated output slice
     bool                timedout;   // if we timedout
     bool                error;      // if there was an error
     string toString() const @trusted {
