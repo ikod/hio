@@ -562,8 +562,11 @@ class hlSocket : FileEventHandler {
             debug tracef("io timedout");
             _loop.stopPoll(_fileno, _pollingFor);
             _polling = AppEvent.NONE;
-            _result.input = NbuffChunk(_input, _input.length);
             _result.output = _iorq.output[_output_sent..$];
+            if ( !_input.isNull() )
+            {
+                _result.input = NbuffChunk(_input, _input.length);
+            }
             // return timeout flag
             _result.timedout = true;
             // make callback
@@ -648,7 +651,10 @@ class hlSocket : FileEventHandler {
                     _loop.stopTimer(_io_timer);
                     _io_timer = null;
                 }
-                _result.input = NbuffChunk(_input, _input_length);
+                if ( !_input.isNull() )
+                {
+                    _result.input = NbuffChunk(_input, _input_length);
+                }
                 _result.output = _iorq.output[_output_sent..$];
                 _polling = AppEvent.NONE;
                 _iorq.callback(_result);
@@ -831,9 +837,10 @@ class hlSocket : FileEventHandler {
         }
         // case c. - we have to use event loop
         IORequest iorq;
-        //iorq.output = data;
+        iorq.output = result.output;
         iorq.callback = callback;
         io(loop, iorq, timeout);
+        result.output = iorq.output;
         return result;
     }
 }
@@ -1110,7 +1117,7 @@ class HioSocket
             return iores;
         }
         void callback(IOResult ior) @trusted {
-            debug tracef("got ior on recv: %s", ior);
+            //debug tracef("got ior on recv: %s", ior);
             iores = ior;
             _fiber.call();
         }
