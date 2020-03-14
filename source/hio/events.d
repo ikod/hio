@@ -211,7 +211,7 @@ struct IOResult {
     bool                error;      // if there was an error
     string toString() const @trusted {
         import std.format;
-        return "in:[%(%02X %)], out:[%(%02X %)], tmo: %s, error: %s".format(input, output, timedout?"yes":"no", error?"yes":"no");
+        return "in:%s, out:%s, tmo: %s, error: %s".format(input, output, timedout?"yes":"no", error?"yes":"no");
     }
 }
 
