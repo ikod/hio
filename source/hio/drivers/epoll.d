@@ -68,13 +68,25 @@ struct NativeEventLoopImpl {
         timingwheels.init();
     }
     void deinit() @trusted {
-        close(epoll_fd);
-        epoll_fd = -1;
-        close(timer_fd);
-        timer_fd = -1;
+        if (epoll_fd>=0)
+        {
+            close(epoll_fd);
+            epoll_fd = -1;
+        }
+        if (timer_fd>=0)
+        {
+            close(timer_fd);
+            timer_fd = -1;
+        }
         //precise_timers = null;
-        GC.removeRange(&fileHandlers[0]);
-        Mallocator.instance.dispose(fileHandlers);
+        if (fileHandlers !is null)
+        {
+            GC.removeRange(&fileHandlers[0]);
+            Mallocator.instance.dispose(fileHandlers);
+            fileHandlers = null;
+        }
+        timingwheels = TimingWheels!(Timer)();
+        timingwheels.init();
     }
 
     void stop() @safe {

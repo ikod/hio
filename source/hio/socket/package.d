@@ -339,6 +339,8 @@ class hlSocket : FileEventHandler {
             .close(_fileno);
             _fileno = -1;
         }
+        _iorq = IORequest();
+        _result = IOResult();
     }
     
     public void bind(string addr) @trusted {
@@ -641,10 +643,25 @@ class hlSocket : FileEventHandler {
             auto rc = (() @trusted => // trusted because output.data is unsafe
                 .send(_fileno, &_iorq.output.data[_output_sent], _iorq.output.length - _output_sent, flags))();
             if ( rc < 0 ) {
-                // error sending XXX
-                assert(0);
+                // error sending
+                _loop.stopPoll(_fileno, _pollingFor);
+                if ( _io_timer ) {
+                    _loop.stopTimer(_io_timer);
+                    _io_timer = null;
+                }
+                if ( !_input.isNull() )
+                {
+                    _result.input = NbuffChunk(_input, _input_length);
+                }
+                // _result.output = _iorq.output[_output_sent..$];
+                _polling = AppEvent.NONE;
+                _result.error = true;
+                _iorq.callback(_result);
+                debug tracef("sent");
+                return;
             }
             _output_sent += rc;
+            _result.output.popFrontN(rc);
             if ( _iorq.output.length == _output_sent ) {
                 _loop.stopPoll(_fileno, _pollingFor);
                 if ( _io_timer ) {
@@ -655,9 +672,9 @@ class hlSocket : FileEventHandler {
                 {
                     _result.input = NbuffChunk(_input, _input_length);
                 }
-                _result.output = _iorq.output[_output_sent..$];
                 _polling = AppEvent.NONE;
                 _iorq.callback(_result);
+                debug tracef("sent");
                 return;
             }
         }
@@ -756,11 +773,18 @@ class hlSocket : FileEventHandler {
     /// Make unblocked IO using loop
     ///
     auto io(hlEvLoop loop, IORequest iorq, in Duration timeout) @safe {
+        _result = IOResult();
+
+        _loop = loop;
+        _iorq = iorq;
+        _result = IOResult();
+        _state = State.IO;
 
         AppEvent ev = AppEvent.NONE;
         if ( iorq.output.length ) {
             ev |= AppEvent.OUT;
             _output_sent = 0;
+            _result.output = _iorq.output;
         }
         if ( iorq.to_read > 0 ) {
             ev |= AppEvent.IN;
@@ -775,9 +799,6 @@ class hlSocket : FileEventHandler {
             _loop.stopTimer(_io_timer);
         }
 
-        _loop = loop;
-        _iorq = iorq;
-        _state = State.IO;
         if ( timeout > 0.seconds ) {
             _io_timer = new Timer(timeout, &io_handler);
             _loop.startTimer(_io_timer);

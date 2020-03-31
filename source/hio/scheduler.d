@@ -553,6 +553,8 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 ubyte[1] b = [0];
                 _ready = true;
                 auto s = _box._pair.write(1, b);
+                // clean up everything and release memory
+                getDefaultLoop.deinit();
             }
         );
         this._child.isDaemon = _isDaemon;

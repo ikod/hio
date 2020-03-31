@@ -20,7 +20,7 @@ import core.atomic;
 import hio.socket;
 import hio.scheduler;
 
-import nbuff: Buffer;
+import nbuff: Nbuff;
 
 shared int ops;
 
@@ -44,13 +44,13 @@ void handler(HioSocket s)
         s.close();
     }
 
-    Buffer buffer;
+    Nbuff buffer;
     size_t p, scanned;
     int connections;
 
     while(true)
     {
-        auto message = s.recv(BufferSize, 10.seconds);
+        IOResult message = s.recv(BufferSize, 10.seconds);
         if (message.error)
         {
             errorf("error receiving request");
@@ -63,14 +63,14 @@ void handler(HioSocket s)
         }
         assert(message.input.length>0, "empty buffer");
         buffer.append(message.input);
-        p = buffer.countUntil(scanned, "\n\n".representation);
+        p = buffer.countUntil("\n\n".representation, scanned);
         if (p>=0)
         {
             connections++;
             if (connections < 5)
             {
                 s.send("HTTP/1.0 200 OK\nContent-Type: text/plain\nContent-Length: 10\n\n0123456789".representation);
-                buffer = Buffer();
+                buffer = Nbuff();
                 p = 0;
                 scanned = 0;
                 continue;
@@ -103,7 +103,7 @@ void server(int so, int n)
     }
 }
 
-enum servers = 8;
+enum servers = 2;
 
 void main()
 {

@@ -30,8 +30,16 @@ shared static this() {
 };
 
 package void uninitializeLoops() {
-    _defaultLoop[Mode.NATIVE] = null;
-    _defaultLoop[Mode.FALLBACK] = null;
+    if (_defaultLoop[Mode.NATIVE])
+    {
+        _defaultLoop[Mode.NATIVE].deinit();
+        _defaultLoop[Mode.NATIVE] = null;
+    }
+    if (_defaultLoop[Mode.FALLBACK])
+    {
+        _defaultLoop[Mode.FALLBACK].deinit();
+        _defaultLoop[Mode.FALLBACK] = null;
+    }
 }
 
 version (unittest)
