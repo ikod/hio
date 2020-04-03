@@ -29,6 +29,10 @@ shared static this() {
     uninitializeLoops();
 };
 
+shared static ~this() {
+    uninitializeLoops();
+};
+
 package void uninitializeLoops() {
     if (_defaultLoop[Mode.NATIVE])
     {
