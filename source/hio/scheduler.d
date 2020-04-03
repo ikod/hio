@@ -269,8 +269,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         }
         this._child = new Thread(
             {
-                getDefaultLoop.deinit();
-                uninitializeLoops();
+                uninitializeLoops(); // close parent loop fds
                 getDefaultLoop.startPoll(_commands[0], AppEvent.IN, new CommandsHandler());
                 try {
                     debug safe_tracef("calling");
@@ -288,7 +287,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                 _ready = true;
                 auto s = _box._pair.write(1, b);
                 // clean up everything and release memory
-                getDefaultLoop.deinit();
+                uninitializeLoops(); // close fds, free memory
             }
         );
         this._child.isDaemon = _isDaemon;
@@ -390,7 +389,6 @@ class Task(F, A...) : Computation if (isCallable!F) {
         if (fiberPoolSize < FiberPoolCapacity )
         {
             fiberPool[fiberPoolSize++] = _executor;
-            // infof("put %d", fiberPoolSize);
         }
         if ( _exception !is null )
         {
@@ -449,7 +447,6 @@ class Task(F, A...) : Computation if (isCallable!F) {
         if (fiberPoolSize < FiberPoolCapacity )
         {
             fiberPool[fiberPoolSize++] = _executor;
-            // infof("put %d", fiberPoolSize);
         }
     }
 }
