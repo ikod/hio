@@ -88,7 +88,18 @@ bool isLinux() pure nothrow @nogc @safe {
     }
 }
 
-class hlSocket : FileEventHandler {
+interface AsyncSocketLike
+{
+    bool open() @safe;
+    void close() @safe;
+    bool connected() @safe;
+    void bind(Address addr);
+    bool connect(Address addr, hlEvLoop loop, HandlerDelegate f, Duration timeout) @safe;
+    int  io(hlEvLoop, IORequest, Duration) @safe;
+}
+
+// callback based socket
+class hlSocket : FileEventHandler, AsyncSocketLike {
     private {
         enum State {
             NEW = 0,
@@ -302,14 +313,14 @@ class hlSocket : FileEventHandler {
         }
     }
 
-    public int open() @trusted {
+    public bool open() @trusted {
         immutable flag = 1;
         if (_fileno != -1) {
             throw new SocketException("You can't open already opened socket: fileno(%d)".format(_fileno));
         }
         _fileno = socket(_af, _sock_type, 0);
         if ( _fileno < 0 )
-            return _fileno;
+            return false;
         _polling = AppEvent.NONE;
         //fd2so[_fileno] = this;
         auto rc = .setsockopt(_fileno, IPPROTO_TCP, TCP_NODELAY, &flag, flag.sizeof);
@@ -324,7 +335,7 @@ class hlSocket : FileEventHandler {
         }
         auto flags = fcntl(_fileno, F_GETFL, 0) | O_NONBLOCK;
         fcntl(_fileno, F_SETFL, flags);
-        return _fileno;
+        return true;
     }
 
     public void close() @safe {
@@ -342,7 +353,34 @@ class hlSocket : FileEventHandler {
         _iorq = IORequest();
         _result = IOResult();
     }
-    
+    public void bind(Address addr)
+    {
+         switch (_af) {
+             case AF_INET:
+                {
+                    import core.sys.posix.netinet.in_;
+                    sockaddr_in *sin = cast(sockaddr_in*)(addr.name);
+                    int flag = 1;
+                    auto rc = .setsockopt(_fileno, SOL_SOCKET, SO_REUSEADDR, &flag, flag.sizeof);
+                    debug tracef("setsockopt for bind result: %d", rc);
+                    if ( rc != 0 ) {
+                    throw new Exception(to!string(strerror(errno())));
+                    }
+                    rc = .bind(_fileno, cast(sockaddr*)sin, cast(uint)sin.sizeof);
+                    debug {
+                        tracef("bind result: %d", rc);
+                    }
+                    if ( rc != 0 ) {
+                        throw new SocketException(to!string(strerror(errno())));
+                    }
+                }
+                break;
+             case AF_UNIX:
+             default:
+                 throw new SocketException("unsupported address family");
+         }
+
+    }
     public void bind(string addr) @trusted {
          debug {
              tracef("binding to %s", addr);
@@ -522,12 +560,13 @@ class hlSocket : FileEventHandler {
         assert(timeout > 0.seconds);
         switch (_af) {
         case AF_INET: {
+                debug tracef("connecting to %s", addr);
                 import core.sys.posix.netinet.in_;
                 sockaddr_in *sin = cast(sockaddr_in*)(addr.name);
                 uint sa_len = sockaddr.sizeof;
                 auto rc = (() @trusted => .connect(_fileno, cast(sockaddr*)sin, sa_len))();
                 if (rc == -1 && errno() != EINPROGRESS) {
-                    debug tracef("connect errno: %s", s_strerror(errno()));
+                    debug tracef("connect to %s errno: %s", addr, s_strerror(errno()));
                     _connected = false;
                     _state = State.IDLE;
                     f(AppEvent.ERR | AppEvent.IMMED);
@@ -561,7 +600,7 @@ class hlSocket : FileEventHandler {
     void io_handler(AppEvent ev) @safe {
         debug tracef("event %s on fd %d", appeventToString(ev), _fileno);
         if ( ev == AppEvent.TMO ) {
-            debug tracef("io timedout");
+            debug tracef("io timedout, %s[%s...], %s", _output_sent, _iorq.output, this);
             _loop.stopPoll(_fileno, _pollingFor);
             _polling = AppEvent.NONE;
             _result.output = _iorq.output[_output_sent..$];
@@ -672,6 +711,7 @@ class hlSocket : FileEventHandler {
                 {
                     _result.input = NbuffChunk(_input, _input_length);
                 }
+                _output_sent = 0;
                 _polling = AppEvent.NONE;
                 _iorq.callback(_result);
                 debug tracef("sent");
@@ -690,7 +730,7 @@ class hlSocket : FileEventHandler {
     ///
     /// return IOResult
     ///
-    auto io(IORequest iorq, in Duration timeout) @safe {
+    IOResult io(IORequest iorq, in Duration timeout) @safe {
         IOResult result;
 
         version (linux) {
@@ -772,8 +812,7 @@ class hlSocket : FileEventHandler {
     ///
     /// Make unblocked IO using loop
     ///
-    auto io(hlEvLoop loop, IORequest iorq, in Duration timeout) @safe {
-        _result = IOResult();
+    int io(hlEvLoop loop, IORequest iorq, in Duration timeout) @safe {
 
         _loop = loop;
         _iorq = iorq;
@@ -1223,7 +1262,7 @@ struct LineReader
         while(!_done)
         {
             debug tracef("count until NL starting from %d", _last_position);
-            auto p = _buff.countUntil(NL, _last_position);
+            long p = _buff.countUntil(NL, _last_position);
             if (p>=0)
             {
                 auto line = _buff[0 .. p];
@@ -1387,62 +1426,62 @@ unittest {
 }
 
 ///
-struct ByLineSplitter(R) {
-    import nbuff;
-    private {
-        enum    NL = "\n".representation;
-        R       source;
-        Buffer  buff;
-        long    last_position;
-        string  line;
-    }
-    ///
-    this(R r) {
-        source = r;
-        popFront;
-    }
-    bool empty() {
-        return line is null && source.empty && buff.empty;
-    }
-    string front() {
-        return line;
-    }
-    void popFront() {
-        while (true) {
-            auto p = buff.countUntil(last_position, NL);
-            if (p >= 0) {
-                last_position = 0;
-                if ( p == 0 ) {
-                    line = "";
-                } else {
-                    line = cast(string) buff[0 .. p].data;
-                }
-                buff = buff[p + 1 .. $];
-                return;
-            }
-            last_position = buff.length;
-            if (source.empty) {
-                line = cast(string) buff[0 .. $].data;
-                buff = Buffer();
-                return;
-            }
-            // fill from source and retry
-            buff.append(source.front);
-            source.popFront;
-        }
-    }
-}
+// struct ByLineSplitter(R) {
+//     import nbuff;
+//     private {
+//         enum    NL = "\n".representation;
+//         R       source;
+//         Nbuff   buff;
+//         long    last_position;
+//         string  line;
+//     }
+//     ///
+//     this(R r) {
+//         source = r;
+//         popFront;
+//     }
+//     bool empty() {
+//         return line is null && source.empty && buff.empty;
+//     }
+//     string front() {
+//         return line;
+//     }
+//     void popFront() {
+//         while (true) {
+//             auto p = buff.countUntil(NL, last_position);
+//             if (p >= 0) {
+//                 last_position = 0;
+//                 if ( p == 0 ) {
+//                     line = "";
+//                 } else {
+//                     line = cast(string) buff[0 .. p].data;
+//                 }
+//                 buff = buff[p + 1 .. $];
+//                 return;
+//             }
+//             last_position = buff.length;
+//             if (source.empty) {
+//                 line = cast(string) buff[0 .. $].data;
+//                 buff = Buffer();
+//                 return;
+//             }
+//             // fill from source and retry
+//             buff.append(source.front);
+//             source.popFront;
+//         }
+//     }
+// }
 
-///
-auto byLineSplitter(R)(R r) {
-    return ByLineSplitter!R(r);
-}
+// ///
+// auto byLineSplitter(R)(R r) {
+//     return ByLineSplitter!R(r);
+// }
 
-unittest {
-    import std.range;
-    for(int s=1;s<7;s++) {
-        auto result = "a\nbb\n\n\nc\n\n".chunks(s)
-            .array.map!"to!string(a).representation".byLineSplitter;
-        assert(equal(result, ["a", "bb", "", "", "c", ""]));
-   }
-}
+// unittest {
+//     import std.range;
+//     for(int s=1;s<7;s++) {
+//         auto result = "a\nbb\n\n\nc\n\n".chunks(s)
+//             .array.map!"to!string(a).representation".byLineSplitter;
+//         assert(equal(result, ["a", "bb", "", "", "c", ""]));
+//    }
+// }
