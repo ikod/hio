@@ -214,47 +214,6 @@ struct NativeEventLoopImpl {
                 debug tracef("got event %s", e);
                 int fd = e.data.fd;
 
-                // if ( fd == timer_fd ) {
-                //     // with EPOLLET flag I dont have to read from timerfd, otherwise I have to:
-                //     // ubyte[8] v;
-                //     // auto tfdr = read(timer_fd, &v[0], 8);
-                //     debug tracef("timer event");
-                //     auto now = Clock.currTime;
-                //     /*
-                //      * Invariants for timers
-                //      * ---------------------
-                //      * timer list must not be empty at event.
-                //      * we have to receive event only on the earliest timer in list
-                //     **/
-                //     assert(!precise_timers.empty, "timers empty on timer event");
-                //     assert(precise_timers.front._expires <= now);
-
-                //     do {
-                //         debug tracef("processing %s, lag: %s", precise_timers.front, Clock.currTime - precise_timers.front._expires);
-                //         Timer t = precise_timers.front;
-                //         HandlerDelegate h = t._handler;
-                //         precise_timers.removeFront;
-                //         if (precise_timers.empty) {
-                //             _del_kernel_timer();
-                //         }
-                //         try {
-                //             h(AppEvent.TMO);
-                //         } catch (Exception e) {
-                //             errorf("Uncaught exception: %s", e);
-                //         }
-                //         now = Clock.currTime;
-                //     } while (!precise_timers.empty && precise_timers.front._expires <= now );
-
-                //     if ( ! precise_timers.empty ) {
-                //         Duration kernel_delta = precise_timers.front._expires - now;
-                //         assert(kernel_delta > 0.seconds);
-                //         _mod_kernel_timer(precise_timers.front, kernel_delta);
-                //     } else {
-                //         // delete kernel timer so we can add it next time
-                //         //_del_kernel_timer();
-                //     }
-                //     continue;
-                // }
                 if ( fd == signal_fd ) {
                     enum siginfo_items = 8;
                     signalfd_siginfo[siginfo_items] info;
@@ -318,6 +277,8 @@ struct NativeEventLoopImpl {
                 foreach(t; wr.timers)
                 {
                     HandlerDelegate h = t._handler;
+                    assert(t._armed);
+                    t._armed = false;
                     try {
                         h(AppEvent.TMO);
                     } catch (Exception e) {
@@ -342,6 +303,8 @@ struct NativeEventLoopImpl {
             overdue ~= t;
             return;
         }
+        assert(!t._armed);
+        t._armed = true;
         ulong twNow = timingwheels.currStdTime(tick);
         Duration twdelay = (now.stdTime - twNow).hnsecs;
         debug(hioepoll) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
@@ -581,6 +544,7 @@ struct NativeEventLoopImpl {
     // files/sockets
     //
     void detach(int fd) @safe {
+        debug tracef("detaching fd(%d) from fileHandlers[%d]", fd, fileHandlers.length);
         fileHandlers[fd] = null;
     }
     void start_poll(int fd, AppEvent ev, FileEventHandler f) @trusted {
