@@ -296,6 +296,8 @@ struct FallbackEventLoopImpl {
                         precise_timers.front, Clock.currTime - precise_timers.front._expires);
                     Timer t = precise_timers.front;
                     HandlerDelegate h = t._handler;
+                    assert(t._armed);
+                    t._armed = false;
                     try {
                         h(AppEvent.TMO);
                     } catch (Exception e) {
@@ -348,6 +350,8 @@ struct FallbackEventLoopImpl {
             overdue ~= t;
             return;
         }
+        assert(!t._armed);
+        t._armed = true;
         ulong twNow = timingwheels.currStdTime(tick);
         Duration twdelay = (now.stdTime - twNow).hnsecs;
         debug(hioselect) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);

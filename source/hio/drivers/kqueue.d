@@ -276,6 +276,8 @@ struct NativeEventLoopImpl {
                 foreach(t; wr.timers)
                 {
                     HandlerDelegate h = t._handler;
+                    assert(t._armed);
+                    t._armed = false;
                     try {
                         h(AppEvent.TMO);
                     } catch (Exception e) {
@@ -302,6 +304,8 @@ struct NativeEventLoopImpl {
             overdue ~= t;
             return;
         }
+        assert(!t._armed);
+        t._armed = true;
         ulong twNow = timingwheels.currStdTime(tick);
         Duration twdelay = (now.stdTime - twNow).hnsecs;
         debug(hiokqueue) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
