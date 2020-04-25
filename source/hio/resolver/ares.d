@@ -141,6 +141,22 @@ public auto hio_gethostbyname(string host, ushort port=InternetAddress.PORT_ANY)
 {
     return theResolver.gethostbyname(host, port);
 }
+public auto hio_gethostbyname(F)(string host, F callback, ushort port=InternetAddress.PORT_ANY, hlEvLoop loop = null) if (isCallable!F)
+{
+    void cb(int s, uint[] a) @safe
+    {
+        InternetAddress[] addresses;
+        foreach (ia; a) {
+            addresses ~= new InternetAddress(ia, port);
+        }
+        callback(s, addresses);
+    }
+    if ( loop is null )
+    {
+        loop = getDefaultLoop();
+    }
+    theResolver.gethostbyname(host, loop, &cb);
+}
 
 public auto hio_gethostbyname6(string host, ushort port=Internet6Address.PORT_ANY)
 {
