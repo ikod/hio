@@ -108,8 +108,9 @@ abstract class FileEventHandler {
 final class Timer {
     private static ulong timer_id = 1;
     package {
+        SysTime                   _expires;
+        bool                      _armed;
         immutable ulong           _id;
-        immutable SysTime         _expires;
         immutable HandlerDelegate _handler;
         immutable string          _file;
         immutable int             _line;
@@ -157,6 +158,19 @@ final class Timer {
         _file = f;
         _line = l;
         _id = timer_id++;
+    }
+    auto rearm(Duration d)
+    {
+        assert(!_armed);
+        if ( d == Duration.max ) {
+            _expires = SysTime.max;
+        } else {
+            _expires = Clock.currTime + d;
+        }
+        version(unittest)
+        {
+            _delay = d;
+        }
     }
     override string toString() const @trusted {
         import std.format: format;
