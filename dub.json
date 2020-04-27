@@ -3,9 +3,12 @@
     "authors": [
         "Igor Khasilev"
     ],
-    "description": "A minimal D application.",
+    "description": "async io, task and other",
     "license": "proprietary",
     "targetType": "library",
+    "preBuildCommands": [
+	    "cd $HIO_PACKAGE_DIR/submodules/http-parser && make package"
+    ],
     "dependencies": {
         "nbuff": "~>0",
         "timingwheels": "*"
@@ -22,9 +25,10 @@
         },
         {
             "name": "unittest",
-            "debugVersions": ["nbuff", "hioselect", "hioepoll"]
+            "debugVersions": ["nbuff", "hioselect", "hioepoll", "hiohttp", "timingwheels"]
         }
     ],
-    "libs-posix": ["cares"]
+    "lflags": ["-L$HIO_PACKAGE_DIR/submodules/http-parser"],
+    "libs-posix": ["cares", "http_parser"]
 
 }

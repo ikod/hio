@@ -1,6 +1,7 @@
 /+ dub.sdl:
     name "t4"
     dflags "-I../source"
+    #dflags "-fsanitize=address"
     #dflags "-debug"
     #debugVersions "nbuff"
     #debugVersions "timingwheels"

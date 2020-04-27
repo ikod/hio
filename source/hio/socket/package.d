@@ -212,6 +212,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             _loop.stopPoll(_fileno, AppEvent.OUT);
             _loop.detach(_fileno);
             _state = State.IDLE;
+            _connect_timer = null;
             _callback(e);
             return;
         case State.ACCEPTING:
@@ -349,6 +350,12 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             //fd2so[_fileno] = null;
             .close(_fileno);
             _fileno = -1;
+        }
+        if ( _connect_timer )
+        {
+            debug tracef("also stop connect timer: %s", _connect_timer);
+            _loop.stopTimer(_connect_timer);
+            _connect_timer = null;
         }
         _iorq = IORequest();
         _result = IOResult();

@@ -240,7 +240,7 @@ package class Resolver: FileEventHandler
     }
 
 
-    enum CleanupFrequency = 1.seconds;
+    enum CleanupFrequency = 15.seconds;
     this()
     {
         immutable init_res = ares_init(&_ares_channel);

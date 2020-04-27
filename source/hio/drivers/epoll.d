@@ -51,6 +51,8 @@ struct NativeEventLoopImpl {
         Signal[][int]           signals;
         //FileHandlerFunction[int] fileHandlers;
         FileEventHandler[]      fileHandlers;
+        Timer[256]              inExpireTimers;
+        long                    inExpireTimersCount;
 
     }
     @disable this(this) {}
@@ -274,8 +276,20 @@ struct NativeEventLoopImpl {
             if(toCatchUp>0)
             {
                 auto wr = timingwheels.advance(toCatchUp);
-                foreach(t; wr.timers)
+                assert(wr.length <= 256);
+                inExpireTimersCount = wr.length;
+                int j;
+                foreach (t; wr.timers)
                 {
+                    inExpireTimers[j++] = t;
+                }
+                for(j=0; j < inExpireTimersCount; j++)
+                {
+                    Timer t = inExpireTimers[j];
+                    if (t is null)
+                    {
+                        continue;
+                    }
                     HandlerDelegate h = t._handler;
                     assert(t._armed);
                     t._armed = false;
@@ -313,6 +327,16 @@ struct NativeEventLoopImpl {
 
     void stop_timer(Timer t) @safe {
         debug(hioepoll) safe_tracef("remove timer %s", t);
+        for(int j=0; j<inExpireTimersCount;j++)
+        {
+            if ( t is inExpireTimers[j])
+            {
+                // trying to stop currently expired timer,
+                // just skip (it already removed from wheel) and mark as processed.
+                inExpireTimers[j] = null;
+                return;
+            }
+        }
         timingwheels.cancel(t);
     }
 
