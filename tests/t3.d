@@ -103,7 +103,7 @@ void server(int so, int n)
     }
 }
 
-enum servers = 4;
+enum servers = 2;
 
 void main()
 {

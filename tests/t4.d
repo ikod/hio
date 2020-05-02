@@ -55,7 +55,7 @@ void server(int so)
             if ( !iores.timedout && !iores.error )
             {
                 IORequest iorq;
-                iorq.output = NbuffChunk("HTTP/1.0 200 OK\nContent-Type: text/plain\nContent-Length: 10\n\n0123456789");
+                iorq.output = Nbuff("HTTP/1.0 200 OK\nContent-Type: text/plain\nContent-Length: 10\n\n0123456789");
                 iorq.callback = &ioWriteCompleted;
                 client_socket.io(loop, iorq, 10.seconds);
             }

@@ -213,14 +213,13 @@ final class Signal {
 struct IORequest {
     size_t              to_read = 0;
     bool                allowPartialInput = true;
-    NbuffChunk          output;
+    Nbuff               output;
 
     void delegate(IOResult) @safe callback;
 }
-
 struct IOResult {
     NbuffChunk          input;
-    NbuffChunk          output;     // updated output slice
+    Nbuff               output;     // updated output slice
     bool                timedout;   // if we timedout
     bool                error;      // if there was an error
     string toString() const @trusted {
@@ -228,6 +227,7 @@ struct IOResult {
         return "in:%s, out:%s, tmo: %s, error: %s".format(input, output, timedout?"yes":"no", error?"yes":"no");
     }
 }
+
 
 struct CircBuff(T) {
     enum Size = 512;

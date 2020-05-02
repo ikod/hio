@@ -26,6 +26,8 @@ import core.sys.linux.sys.signalfd;
 import core.sys.posix.unistd: close, read;
 import core.sys.posix.time : itimerspec, CLOCK_MONOTONIC , timespec;
 
+import core.memory;
+
 import timingwheels;
 
 import hio.events;
@@ -136,7 +138,6 @@ struct NativeEventLoopImpl {
         **/
         SysTime deadline = Clock.currTime + d;
         debug tracef("evl run %s",runInfinitely? "infinitely": "for %s".format(d));
-
         scope ( exit )
         {
             stopped = false;
@@ -145,28 +146,6 @@ struct NativeEventLoopImpl {
         while( !stopped ) {
             debug tracef("event loop iteration");
 
-            //
-            // handle user events(notifications)
-            //
-            // auto counter = notificationsQueue.Size * 10;
-            // while(!notificationsQueue.empty){
-            //     auto nd = notificationsQueue.get();
-            //     Notification n = nd._n;
-            //     Broadcast b = nd._broadcast;
-            //     n.handler(b);
-            //     counter--;
-            //     enforce(counter > 0, "Can't clear notificatioinsQueue");
-            // }
-            //auto counter = notificationsQueue.Size * 10;
-            //while(!notificationsQueue.empty){
-            //    auto n = notificationsQueue.get();
-            //    n.handler();
-            //    counter--;
-            //    enforce(counter > 0, "Can't clear notificatioinsQueue");
-            //}
-
-            //execute_overdue_timers();
-
             if (stopped) {
                 break;
             }
@@ -174,42 +153,20 @@ struct NativeEventLoopImpl {
             int timeout_ms = _calculate_timeout(deadline);
 
             debug(hioepoll) safe_tracef("wait in poll for %s.ms", timeout_ms);
+
             int ready = epoll_wait(epoll_fd, &events[0], MAXEVENTS, timeout_ms);
 
             debug tracef("got %d events", ready);
 
             SysTime now_real = Clock.currTime;
-            // // check timingweels
-            // auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
-            // if(toCatchUp>0)
-            // {
-            //     auto wr = timingwheels.advance(toCatchUp);
-            //     foreach(t; wr.timers)
-            //     {
-            //         HandlerDelegate h = t._handler;
-            //         try {
-            //             h(AppEvent.TMO);
-            //         } catch (Exception e) {
-            //             errorf("Uncaught exception: %s", e);
-            //         }
-            //     }
-            // }
-            // execute_overdue_timers();
-            // if (!runInfinitely && now_real >= deadline)
-            // {
-            //     debug(hioepoll) safe_tracef("reached deadline, return");
-            //     return;
-            // }
+
             if ( ready == -1 && errno == EINTR) {
                 continue;
             }
             if ( ready < 0 ) {
                 errorf("epoll_wait returned error %s", fromStringz(strerror(errno)));
             }
-            // if (ready == 0) 
-            // {
-            //     continue;
-            // }
+
             debug(hioepoll) tracef("events: %s", events[0..ready]);
             foreach(i; 0..ready) {
                 auto e = events[i];
@@ -268,9 +225,6 @@ struct NativeEventLoopImpl {
                         throw e;
                     }
                 }
-                //HandlerDelegate h = cast(HandlerDelegate)e.data.ptr;
-                //AppEvent appEvent = AppEvent(sysEventToAppEvent(e.events), -1);
-                //h(appEvent);
             }
             auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
             if(toCatchUp>0)

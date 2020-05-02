@@ -124,14 +124,13 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         // accept related fields
         void delegate(int) @safe _accept_callback;
         // io related fields
-        IORequest            _iorq;
-        IOResult             _result;
+        IORequest           _iorq;
+        IOResult            _result;
         Timer                _connect_timer;
         Timer                _io_timer;
         AppEvent             _pollingFor = AppEvent.NONE;
         MutableNbuffChunk    _input;
         size_t               _input_length;
-        size_t               _output_sent;
         bool                 _connected;
         uint                 _accepts_in_a_row = 10;
     }
@@ -604,13 +603,21 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         loop.startPoll(_fileno, AppEvent.IN|AppEvent.EXT_EPOLLEXCLUSIVE, this);
     }
 
+    private auto w(ref Nbuff b) @trusted
+    {
+        import core.sys.posix.sys.uio: iovec, writev;
+        iovec[8] iov;
+        int n = b.toIoVec(&iov[0], 8);
+        long r = .writev(_fileno, &iov[0], n);
+        return r;
+    }
+
     void io_handler(AppEvent ev) @safe {
         debug tracef("event %s on fd %d", appeventToString(ev), _fileno);
         if ( ev == AppEvent.TMO ) {
-            debug tracef("io timedout, %s[%s...], %s", _output_sent, _iorq.output, this);
+            debug tracef("io timedout, %s, %s", _iorq.output, this);
             _loop.stopPoll(_fileno, _pollingFor);
             _polling = AppEvent.NONE;
-            _result.output = _iorq.output[_output_sent..$];
             if ( !_input.isNull() )
             {
                 _result.input = NbuffChunk(_input, _input.length);
@@ -638,7 +645,6 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                     _io_timer = null;
                 }
                 _result.input = NbuffChunk(_input, _input.length);
-                _result.output = _iorq.output[_output_sent..$];
                 _iorq.callback(_result);
                 return;
             }
@@ -673,7 +679,6 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                     _io_timer = null;
                 }
                 _result.input = NbuffChunk(_input, _input_length);
-                _result.output = _iorq.output[_output_sent..$];
                 _polling = AppEvent.NONE;
                 _iorq.callback(_result);
                 return;
@@ -682,12 +687,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         if ( ev & AppEvent.OUT ) {
             debug tracef("sending %s", _iorq.output);
             assert(_iorq.output.length>0);
-            uint flags = 0;
-            version(linux) {
-                flags = MSG_NOSIGNAL;
-            }
-            auto rc = (() @trusted => // trusted because output.data is unsafe
-                .send(_fileno, &_iorq.output.data[_output_sent], _iorq.output.length - _output_sent, flags))();
+            auto rc = w(_iorq.output);
             if ( rc < 0 ) {
                 // error sending
                 _loop.stopPoll(_fileno, _pollingFor);
@@ -699,16 +699,14 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 {
                     _result.input = NbuffChunk(_input, _input_length);
                 }
-                // _result.output = _iorq.output[_output_sent..$];
                 _polling = AppEvent.NONE;
                 _result.error = true;
                 _iorq.callback(_result);
                 debug tracef("sent");
                 return;
             }
-            _output_sent += rc;
-            _result.output.popFrontN(rc);
-            if ( _iorq.output.length == _output_sent ) {
+            _iorq.output.pop(rc);
+            if ( _iorq.output.length == 0 ) {
                 _loop.stopPoll(_fileno, _pollingFor);
                 if ( _io_timer ) {
                     _loop.stopTimer(_io_timer);
@@ -718,7 +716,6 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 {
                     _result.input = NbuffChunk(_input, _input_length);
                 }
-                _output_sent = 0;
                 _polling = AppEvent.NONE;
                 _iorq.callback(_result);
                 debug tracef("sent");
@@ -757,25 +754,18 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         debug tracef("Blocked io request %s", iorq);
 
         // handle requested output
-        //result.output = iorq.output;
-        auto to_send = iorq.output.length;
-        size_t already_sent = 0;
-        while(to_send > 0) {
-            auto rc = () @trusted {
-                return .send(_fileno, cast(void*)&iorq.output.data[already_sent], to_send, flags);
-            }();
-
-            if ( rc < 0 ) {
-                result.error = true;
-                return result;
-            }
-            assert(rc>0);
-            to_send -= rc;
-            already_sent += rc;
-        }
-        if (to_send > 0)
+        result.output = iorq.output;
+        while(result.output.length > 0)
         {
-            result.output = iorq.output[to_send..$];
+            auto rc = w(result.output);
+            if ( rc > 0)
+            {
+                result.output.pop(rc);
+                continue;
+            }
+            assert(rc<0);
+            result.error = true;
+            return result;
         }
         // handle requested input
         size_t to_read = iorq.to_read;
@@ -829,7 +819,6 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         AppEvent ev = AppEvent.NONE;
         if ( iorq.output.length ) {
             ev |= AppEvent.OUT;
-            _output_sent = 0;
             _result.output = _iorq.output;
         }
         if ( iorq.to_read > 0 ) {
@@ -878,7 +867,10 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         enforce!SocketException(data.length > 0, "You must have non-empty 'data' when calling 'send'");
 
         IOResult result;
-        result.output = NbuffChunk(data);
+        Nbuff o;
+        NbuffChunk d = NbuffChunk(data);
+        o.append(d);
+        result.output = o;
 
         uint flags = 0;
         version(linux) {
@@ -957,42 +949,6 @@ private auto str2inetaddr(string addr) @safe pure {
     s.open();
     s.close();
 }
-
-//unittest {
-//    globalLogLevel = LogLevel.trace;
-//
-//    hlSocket s = new hlSocket();
-//    s.open();
-//
-//
-//    auto mockLoop = new hlEvLoop();
-//    mockLoop.run = (Duration d) {
-//        s._handler(AppEvent.IN);
-//    };
-//
-//    mockLoop.startPoll = (int fd, AppEvent ev, FileHandlerFunction f) @safe {
-//        tracef("called mock startPoll: %d, %s", fd, appeventToString(ev));
-//    };
-//
-//    mockLoop.stopPoll = (int fd, AppEvent ev) @safe {
-//        tracef("called mock stopPoll: %d, %s", fd, appeventToString(ev));
-//    };
-//
-//    IORequest iorq;
-//    iorq.to_read = 1;
-//    iorq.output = "abc".representation();
-//    iorq.callback = (IOResult r) {
-//        tracef("called mock callback: %s", r);
-//    };
-//    auto result = s.io(mockLoop, iorq, 1.seconds);
-//    mockLoop.run(1.seconds);
-//    assert(s._polling == AppEvent.NONE);
-//    iorq.to_read = 0;
-//    result = s.io(mockLoop, iorq, 1.seconds);
-//    mockLoop.run(1.seconds);
-//    assert(s._polling == AppEvent.NONE);
-//    s.close();
-//}
 
 class HioSocket
 {
@@ -1205,7 +1161,7 @@ class HioSocket
         if ( _fiber is null ) {
             IORequest ioreq;
             _socket.blocking = true;
-            ioreq.output = NbuffChunk(data);
+            ioreq.output = Nbuff(data);
             ioresult = _socket.io(ioreq, timeout);
             _socket.blocking = false;
             if ( ioresult.error ) {
@@ -1330,7 +1286,7 @@ unittest {
         s.open();
         auto ok = s.connect("127.0.0.1:%d".format(port), 1.seconds);
         IORequest iorq;
-        iorq.output = NbuffChunk("hello");
+        iorq.output = Nbuff("hello");
         iorq.to_read = 8;
         s.blocking = true;
         IOResult iors = s.io(iorq, 1.seconds);
@@ -1431,64 +1387,3 @@ unittest {
     });
     t.join;
 }
-
-///
-// struct ByLineSplitter(R) {
-//     import nbuff;
-//     private {
-//         enum    NL = "\n".representation;
-//         R       source;
-//         Nbuff   buff;
-//         long    last_position;
-//         string  line;
-//     }
-//     ///
-//     this(R r) {
-//         source = r;
-//         popFront;
-//     }
-//     bool empty() {
-//         return line is null && source.empty && buff.empty;
-//     }
-//     string front() {
-//         return line;
-//     }
-//     void popFront() {
-//         while (true) {
-//             auto p = buff.countUntil(NL, last_position);
-//             if (p >= 0) {
-//                 last_position = 0;
-//                 if ( p == 0 ) {
-//                     line = "";
-//                 } else {
-//                     line = cast(string) buff[0 .. p].data;
-//                 }
-//                 buff = buff[p + 1 .. $];
-//                 return;
-//             }
-//             last_position = buff.length;
-//             if (source.empty) {
-//                 line = cast(string) buff[0 .. $].data;
-//                 buff = Buffer();
-//                 return;
-//             }
-//             // fill from source and retry
-//             buff.append(source.front);
-//             source.popFront;
-//         }
-//     }
-// }
-
-// ///
-// auto byLineSplitter(R)(R r) {
-//     return ByLineSplitter!R(r);
-// }
-
-// unittest {
-//     import std.range;
-//     for(int s=1;s<7;s++) {
-//         auto result = "a\nbb\n\n\nc\n\n".chunks(s)
-//             .array.map!"to!string(a).representation".byLineSplitter;
-//         assert(equal(result, ["a", "bb", "", "", "c", ""]));
-//    }
-// }
