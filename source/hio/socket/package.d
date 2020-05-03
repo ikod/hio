@@ -185,7 +185,12 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         return _errno;
     }
 
-    void blocking(bool blocking) @property {
+    bool blocking() @property @safe
+    {
+        auto flags = () @trusted {return fcntl(_fileno, F_GETFL, 0);}();
+        return cast(bool)(flags & O_NONBLOCK);
+    }
+    void blocking(bool blocking) @property @safe {
         auto flags = () @trusted {return fcntl(_fileno, F_GETFL, 0);}();
         if ( blocking ) {
             (() @trusted => fcntl(_fileno, F_SETFL, flags & ~O_NONBLOCK))();
@@ -499,6 +504,9 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 auto old_timeouts = getSndRcvTimeouts();
                 setSndRcvTimeouts(timeout);
 
+                auto old_blocking = blocking();
+                blocking(true);
+
                 sockaddr_in sin;
                 sin.sin_family = _af;
                 sin.sin_port = internet_addr[1];
@@ -507,6 +515,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 auto rc = (() @trusted => .connect(_fileno, cast(sockaddr*)&sin, sa_len))();
                 auto connerrno = errno();
 
+                blocking(old_blocking);
                 // restore timeouts
                 setSndRcvTimeouts(old_timeouts);
                 if (rc == -1 ) {
