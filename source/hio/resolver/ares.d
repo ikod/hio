@@ -179,6 +179,11 @@ private struct DNSCacheEntry
     long                _timestamp;
     long                _ttl;       // in hnsecs
     uint[]              _addresses;
+    string toString()
+    {
+        return "status: '%s', ttl: %ssec addr: [%(%s,%)]".format(ares_statusString(_status), _ttl/10_000_000,
+                    _addresses.map!(i => fromStringz(inet_ntoa(cast(in_addr)htonl(i)))));
+    }
 }
 private struct DNS6CacheEntry
 {
@@ -247,13 +252,13 @@ package class Resolver: FileEventHandler
         assert(init_res == ARES_SUCCESS, "Can't initialise ares.");
         _cacheTimerHandler = (AppEvent e)
         {
-            debug trace("run dns cache cleanup");
+            debug(hioresolve) trace("run dns cache cleanup");
             auto now = Clock.currStdTime;
             foreach(name, dnsCacheEntry; _cache.byPair())
             {
                 if (now - dnsCacheEntry._timestamp > dnsCacheEntry._ttl)
                 {
-                    debug tracef("remove from cache expired entry %s", name);
+                    debug(hioresolve) tracef("remove from cache expired entry %s", name);
                     _cache.remove(name);
                 }
             }
@@ -261,7 +266,7 @@ package class Resolver: FileEventHandler
             {
                 if (now - dnsCacheEntry._timestamp > dnsCacheEntry._ttl)
                 {
-                    debug tracef("remove from cache6 expired entry %s", name);
+                    debug(hioresolve) tracef("remove from cache6 expired entry %s", name);
                     _cache6.remove(name);
                 }
             }
@@ -305,14 +310,14 @@ package class Resolver: FileEventHandler
         int p = inet_pton(AF_INET, hostname.ptr, &addr);
         if (p > 0)
         {
-            debug tracef("address converetd from %s", hostname, p);
+            debug(hioresolve) tracef("address converetd from %s", hostname, p);
             return ResolverResult4(ARES_SUCCESS, [new InternetAddress(ntohl(addr), port)]);
         }
         // lookup in cache
         auto f = _cache.fetch(hostname);
         if ( f.ok && (now - f.value._timestamp < f.value._ttl) )
         {
-            debug tracef("return cached resolve for \"%s\" with status %s", hostname, ares_statusString(f.value._status));
+            debug(hioresolve) tracef("return cached resolve for \"%s\" with status %s", hostname, ares_statusString(f.value._status));
             foreach(ia; f.value._addresses)
             {
                 addresses ~= new InternetAddress(ia, port);
@@ -323,7 +328,7 @@ package class Resolver: FileEventHandler
         dnsInfo = resolve4FromFile(hostname);
         if (dnsInfo._status == ARES_SUCCESS)
         {
-            debug tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
+            debug(hioresolve) tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
             foreach(ia; dnsInfo._addresses)
             {
                 addresses ~= new InternetAddress(ia, port);
@@ -332,7 +337,7 @@ package class Resolver: FileEventHandler
             return ResolverResult4(ARES_SUCCESS, addresses);
         }
 
-        debug tracef("start resolving %s", hostname);
+        debug(hioresolve) tracef("start resolving %s", hostname);
         //
         id = ++_id;
         auto fiber = Fiber.getThis();
@@ -347,14 +352,14 @@ package class Resolver: FileEventHandler
                 }
                 done = true;
                 _cb4d.remove(id);
-                debug tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
+                debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
             }
             _cb4d[id] = Callback4InfoD(hostname, &cba);
             ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_a, ares_callback4, cast(void*)id);
             if ( done )
             {
                 // resolved from files
-                debug tracef("return ready result");
+                debug(hioresolve) tracef("return ready result");
                 return ResolverResult(status, addresses);
             }
             // called without loop/callback, we can and have to block
@@ -386,7 +391,7 @@ package class Resolver: FileEventHandler
                 }
                 done = true;
                 _cb4d.remove(id);
-                debug tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
+                debug(hioresolve) tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
                 if (yielded) fiber.call();
             }
             // handleLockedFibers call callbacks for concurrent resolves
@@ -399,7 +404,7 @@ package class Resolver: FileEventHandler
                     assert(inActiveResolving.ok);
                     foreach (cb; inActiveResolving.value)
                     {
-                        debug tracef("wakeup resolving waitor");
+                        debug(hioresolve) tracef("wakeup resolving waitor");
                         cb(status, addresses.map!"a.addr".array);
                     }
                     _activeResolves4d.remove(hostname);
@@ -424,7 +429,7 @@ package class Resolver: FileEventHandler
                 else
                 {
                     // some follower, add to list of waitors
-                    debug tracef("have to lock on resolving");
+                    debug(hioresolve) tracef("have to lock on resolving");
                     auto waitors = inActiveResolving.value;
                     waitors ~= &cbb;
                     _activeResolves4d.put(hostname, waitors);
@@ -439,12 +444,12 @@ package class Resolver: FileEventHandler
             if ( done )
             {
                 // resolved from files
-                debug tracef("return ready result");
+                debug(hioresolve) tracef("return ready result");
                 handleLockedFibers();
                 return ResolverResult(status, addresses);
             }
             auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-            debug tracef("getsocks: 0x%04X, %s", rc, _sockets);
+            debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
             // prepare listening for socket events
             handleGetSocks(rc, &_sockets);
             yielded = true;
@@ -466,14 +471,14 @@ package class Resolver: FileEventHandler
         int p = inet_pton(AF_INET6, hostname.ptr, addr.ptr);
         if (p > 0)
         {
-            debug tracef("address converetd from %s", hostname, p);
+            debug(hioresolve) tracef("address converetd from %s", hostname, p);
             return ResolverResult6(ARES_SUCCESS, [new Internet6Address(addr, port)]);
         }
 
         auto f = _cache6.fetch(hostname);
         if ( f.ok && (now - f.value._timestamp < f.value._ttl) )
         {
-            debug tracef("return cached resolve status '%s' for \"%s\"", ares_statusString(f.value._status), hostname);
+            debug(hioresolve) tracef("return cached resolve status '%s' for \"%s\"", ares_statusString(f.value._status), hostname);
             foreach(ia; f.value._addresses)
             {
                 addresses ~= new Internet6Address(ia, port);
@@ -484,7 +489,7 @@ package class Resolver: FileEventHandler
         dnsInfo = resolve6FromFile(hostname);
         if (dnsInfo._status == ARES_SUCCESS)
         {
-            debug tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
+            debug(hioresolve) tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
             foreach(ia; dnsInfo._addresses)
             {
                 addresses ~= new Internet6Address(ia, port);
@@ -493,7 +498,7 @@ package class Resolver: FileEventHandler
             return ResolverResult6(ARES_SUCCESS, addresses);
         }
 
-        debug tracef("start resolving %s", hostname);
+        debug(hioresolve) tracef("start resolving %s", hostname);
         //
         id = ++_id;
         auto fiber = Fiber.getThis();
@@ -508,14 +513,14 @@ package class Resolver: FileEventHandler
                 }
                 done = true;
                 _cb6d.remove(id);
-                debug tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
+                debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
             }
             _cb6d[id] = Callback6InfoD(hostname, &cba);
             ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, ares_callback6, cast(void*)id);
             if ( done )
             {
                 // resolved from files
-                debug tracef("return ready result");
+                debug(hioresolve) tracef("return ready result");
                 return ResolverResult6(status, addresses);
             }
             // called without loop/callback, we can and have to block
@@ -534,7 +539,7 @@ package class Resolver: FileEventHandler
                 count = select(nfds, &readers, &writers, null, tvp);
                 ares_process(_ares_channel, &readers, &writers);
             }
-            debug tracef("return received result");
+            debug(hioresolve) tracef("return received result");
             return ResolverResult6(status, addresses);
         }
         else
@@ -548,7 +553,7 @@ package class Resolver: FileEventHandler
                 }
                 done = true;
                 _cb6d.remove(id);
-                debug tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
+                debug(hioresolve) tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
                 if (yielded) fiber.call();
             }
             // handleLockedFibers call callbacks for concurrent resolves
@@ -561,7 +566,7 @@ package class Resolver: FileEventHandler
                     assert(inActiveResolving.ok);
                     foreach (cb; inActiveResolving.value)
                     {
-                        debug tracef("wakeup resolving waitor");
+                        debug(hioresolve) tracef("wakeup resolving waitor");
                         cb(status, addresses.map!"a.addr".array);
                     }
                     _activeResolves6d.remove(hostname);
@@ -586,7 +591,7 @@ package class Resolver: FileEventHandler
                 else
                 {
                     // some follower, add to list of waitors
-                    debug tracef("have to lock on resolving");
+                    debug(hioresolve) tracef("have to lock on resolving");
                     auto waitors = inActiveResolving.value;
                     waitors ~= &cbb;
                     _activeResolves6d.put(hostname, waitors);
@@ -600,12 +605,12 @@ package class Resolver: FileEventHandler
             if ( done )
             {
                 // resolved from files
-                debug tracef("return ready result");
+                debug(hioresolve) tracef("return ready result");
                 handleLockedFibers();
                 return ResolverResult6(status, addresses);
             }
             auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-            debug tracef("getsocks: 0x%04X, %s", rc, _sockets);
+            debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
             // prepare listening for socket events
             handleGetSocks(rc, &_sockets);
             yielded = true;
@@ -621,25 +626,25 @@ package class Resolver: FileEventHandler
         {
             if (ARES_SOCK_READABLE(rc, i) && !_in_read[i])
             {
-                debug tracef("add ares socket %s to IN events", (*s)[i]);
+                debug(hioresolve) tracef("add ares socket %s to IN events", (*s)[i]);
                 _loop.startPoll((*s)[i], AppEvent.IN, this);
                 _in_read[i] = true;
             }
             else if (!ARES_SOCK_READABLE(rc, i) && _in_read[i])
             {
-                debug tracef("detach ares socket %s from IN events", (*s)[i]);
+                debug(hioresolve) tracef("detach ares socket %s from IN events", (*s)[i]);
                 _loop.stopPoll((*s)[i], AppEvent.IN);
                 _in_read[i] = false;
             }
             if (ARES_SOCK_WRITABLE(rc, i) && !_in_write[i])
             {
-                debug tracef("add ares socket %s to OUT events", (*s)[i]);
+                debug(hioresolve) tracef("add ares socket %s to OUT events", (*s)[i]);
                 _loop.startPoll((*s)[i], AppEvent.OUT, this);
                 _in_write[i] = true;
             }
             else if (!ARES_SOCK_WRITABLE(rc, i) && _in_write[i])
             {
-                debug tracef("detach ares socket %s from OUT events", (*s)[i]);
+                debug(hioresolve) tracef("detach ares socket %s from OUT events", (*s)[i]);
                 _loop.stopPoll((*s)[i], AppEvent.OUT);
                 _in_write[i] = true;
             }
@@ -653,7 +658,7 @@ package class Resolver: FileEventHandler
     //
     override void eventHandler(int f, AppEvent ev)
     {
-        debug tracef("handler: %d, %s", f, ev);
+        debug(hioresolve) tracef("handler: %d, %s", f, ev);
         int socket_index;
         ares_socket_t rs = ARES_SOCKET_BAD, ws = ARES_SOCKET_BAD;
 
@@ -688,7 +693,7 @@ package class Resolver: FileEventHandler
         }
         ares_process_fd(_ares_channel, rs, ws);
         auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-        debug tracef("getsocks: 0x%04X, %s", rc, _sockets);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
         // prepare listening for socket events
         handleGetSocks(rc, &_sockets);
     }
@@ -702,7 +707,7 @@ package class Resolver: FileEventHandler
         DNSCacheEntry cache_entry;
         cache_entry._status = status;
         cache_entry._timestamp = Clock.currStdTime;
-        debug tracef("got ares_callback from ares s:\"%s\" t:%d, id: %d", fromStringz(ares_strerror(status)), timeouts, id);
+        debug(hioresolve) tracef("got ares_callback from ares s:\"%s\" t:%d, id: %d", fromStringz(ares_strerror(status)), timeouts, id);
         if ( status == ARES_SUCCESS)
         {
             int naddrttls = 32;
@@ -716,7 +721,7 @@ package class Resolver: FileEventHandler
                 uint[] result;
                 foreach(ref a; addrttls[0..naddrttls])
                 {
-                    debug tracef("record %s ttl: %d", a.ipaddr.s_addr, a.ttl);
+                    //debug(hioresolve) tracef("record %s ttl: %d", a.ipaddr.s_addr, a.ttl);
                     min_ttl = min(a.ttl, min_ttl);
                     auto addr = a.ipaddr.s_addr;
                     result ~= ntohl(addr);
@@ -731,14 +736,14 @@ package class Resolver: FileEventHandler
         }
         if ( cache_entry._status != ARES_SUCCESS)
         {
-            debug tracef("set ttl for neg resolve");
+            debug(hioresolve) tracef("set ttl for neg resolve");
             cache_entry._ttl = MaxNegTTL * sec2hnsec;
         }
         auto f = resolver._cb4f.fetch(id);
         if ( f.ok )
         {
             resolver._cb4f.remove(id);
-            debug tracef("put resolve into cache for \"%s\" %s", f.value.hostname, cache_entry);
+            debug(hioresolve) tracef("put resolve into cache for \"%s\" %s", f.value.hostname, cache_entry);
             resolver._cache.put(f.value.hostname, cache_entry);
             f.value.callback(status, cache_entry._addresses);
             return;
@@ -747,7 +752,7 @@ package class Resolver: FileEventHandler
         if ( d.ok )
         {
             resolver._cb4d.remove(id);
-            debug tracef("put resolve into cache for \"%s\" %s", d.value.hostname, cache_entry);
+            debug(hioresolve) tracef("put into DNS cache \"%s\" -> %s", d.value.hostname, cache_entry);
             resolver._cache.put(d.value.hostname, cache_entry);
             d.value.callback(status, cache_entry._addresses);
             return;
@@ -762,7 +767,7 @@ package class Resolver: FileEventHandler
         DNS6CacheEntry cache_entry;
         cache_entry._status = status;
         cache_entry._timestamp = Clock.currStdTime;
-        debug tracef("got ares_callback from ares s:\"%s\" t:%d, id: %d", fromStringz(ares_strerror(status)), timeouts, id);
+        debug(hioresolve) tracef("got ares_callback from ares s:\"%s\" t:%d, id: %d", fromStringz(ares_strerror(status)), timeouts, id);
         if ( status == ARES_SUCCESS)
         {
             int naddr6ttls =  32;
@@ -790,14 +795,14 @@ package class Resolver: FileEventHandler
         }
         if ( cache_entry._status != ARES_SUCCESS)
         {
-            debug tracef("set ttl for neg resolve");
+            debug(hioresolve) tracef("set ttl for neg resolve");
             cache_entry._ttl = MaxNegTTL * sec2hnsec;
         }
         auto f = resolver._cb6f.fetch(id);
         if ( f.ok )
         {
             resolver._cb6f.remove(id);
-            debug tracef("put resolve into cache for \"%s\"", f.value.hostname);
+            debug(hioresolve) tracef("put resolve into cache for \"%s\"", f.value.hostname);
             resolver._cache6.put(f.value.hostname, cache_entry);
             f.value.callback(status, cache_entry._addresses);
             return;
@@ -806,7 +811,7 @@ package class Resolver: FileEventHandler
         if ( d.ok )
         {
             resolver._cb6d.remove(id);
-            debug tracef("put resolve into cache for \"%s\": %s", d.value.hostname, cache_entry);
+            debug(hioresolve) tracef("put resolve into cache for \"%s\": %s", d.value.hostname, cache_entry);
             resolver._cache6.put(d.value.hostname, cache_entry);
             d.value.callback(status, cache_entry._addresses);
             return;
@@ -825,8 +830,8 @@ package class Resolver: FileEventHandler
         }();
         if ( status == ARES_SUCCESS )
         {
-            debug tracef("he=%s", fromStringz(he.h_name));
-            debug tracef("h_length=%X", he.h_length);
+            debug(hioresolve) tracef("he=%s", fromStringz(he.h_name));
+            debug(hioresolve) tracef("h_length=%X", he.h_length);
             auto a = he.h_addr_list;
             () @trusted {
                 while( *a )
@@ -864,8 +869,8 @@ package class Resolver: FileEventHandler
         }();
         if ( status == ARES_SUCCESS )
         {
-            debug tracef("he=%s", fromStringz(he.h_name));
-            debug tracef("h_length=%X", he.h_length);
+            debug(hioresolve) tracef("he=%s", fromStringz(he.h_name));
+            debug(hioresolve) tracef("h_length=%X", he.h_length);
             auto a = he.h_addr_list;
             () @trusted
             {
@@ -911,7 +916,7 @@ package class Resolver: FileEventHandler
         if ( dnsInfo._status == ARES_SUCCESS)
         {
             _cache.put(hostname, dnsInfo);
-            debug tracef("return dns from file for \"%s\"", hostname);
+            debug(hioresolve) tracef("return dns from file for \"%s\"", hostname);
             cb(dnsInfo._status, dnsInfo._addresses);
             return;
         }
@@ -930,7 +935,7 @@ package class Resolver: FileEventHandler
             ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_a, ares_callback4, cast(void*)id);
         }();
         auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-        debug tracef("getsocks: 0x%04X, %s", rc, _sockets);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
         // prepare listening for socket events
         handleGetSocks(rc, &_sockets);
     }
@@ -954,7 +959,7 @@ package class Resolver: FileEventHandler
         if ( dnsInfo._status == ARES_SUCCESS )
         {
             _cache6.put(hostname, dnsInfo);
-            debug tracef("return dns from file for \"%s\"", hostname);
+            debug(hioresolve) tracef("return dns from file for \"%s\"", hostname);
             cb(dnsInfo._status, dnsInfo._addresses);
             return;
         }
@@ -973,7 +978,7 @@ package class Resolver: FileEventHandler
             ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, ares_callback6, cast(void*)id);
         }();
         auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-        debug tracef("getsocks: 0x%04X, %s", rc, _sockets);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
         // prepare listening for socket events
         handleGetSocks(rc, &_sockets);
     }
@@ -986,13 +991,13 @@ unittest
     auto resolver = theResolver;
     auto r = resolver.gethostbyname("localhost");
     assert(r.status == 0);
-    debug tracef("%s", r);
+    debug(hioresolve) tracef("%s", r);
     r = resolver.gethostbyname("8.8.8.8");
     assert(r.status == 0);
-    debug tracef("%s", r);
+    debug(hioresolve) tracef("%s", r);
     r = resolver.gethostbyname("dlang.org");
     assert(r.status == 0);
-    debug tracef("%s", r);
+    debug(hioresolve) tracef("%s", r);
     r = resolver.gethostbyname(".......");
     assert(r.status != 0);
     tracef("status: %s", ares_statusString(r.status));
@@ -1000,12 +1005,12 @@ unittest
     assert(r.status != 0);
     r = resolver.gethostbyname("iuytkjhcxbvkjhgfaksdjf");
     assert(r.status != 0);
-    debug tracef("%s", r);
-    debug tracef("status: %s", ares_statusString(r.status));
+    debug(hioresolve) tracef("%s", r);
+    debug(hioresolve) tracef("status: %s", ares_statusString(r.status));
     r = resolver.gethostbyname("iuytkjhcxbvkjhgfaksdjf");
     assert(r.status != 0);
-    debug tracef("%s", r);
-    debug tracef("status: %s", ares_statusString(r.status));
+    debug(hioresolve) tracef("%s", r);
+    debug(hioresolve) tracef("status: %s", ares_statusString(r.status));
 }
 
 unittest
@@ -1015,13 +1020,13 @@ unittest
     auto resolver = theResolver;
     // auto r = resolver.gethostbyname6("ip6-localhost");
     // assert(r.status == 0);
-    // debug tracef("%s", r);
+    // debug(hioresolve) tracef("%s", r);
     // r = resolver.gethostbyname6("8.8.8.8");
     // assert(r.status == 0);
-    // debug tracef("%s", r);
+    // debug(hioresolve) tracef("%s", r);
     auto r = resolver.gethostbyname6("dlang.org");
     assert(r.status == 0);
-    debug tracef("%s", r);
+    debug(hioresolve) tracef("%s", r);
     r = resolver.gethostbyname6(".......");
     assert(r.status != 0);
     tracef("status: %s", ares_statusString(r.status));
@@ -1050,7 +1055,7 @@ unittest
                 adresses ~= new InternetAddress(ia, InternetAddress.PORT_ANY);
             }
             done = true;
-            debug tracef("resolve for %s: %s, %s", hostname, fromStringz(ares_strerror(s)), a);
+            debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, fromStringz(ares_strerror(s)), a);
             if (yielded)
             {
                 fiber.call();
@@ -1108,7 +1113,7 @@ unittest
                 addresses ~= new Internet6Address(ia, Internet6Address.PORT_ANY);
             }
             done = true;
-            debug tracef("resolve for %s: %s, %s", hostname, fromStringz(ares_strerror(s)), a);
+            debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, fromStringz(ares_strerror(s)), a);
             if (yielded)
             {
                 fiber.call();
@@ -1146,7 +1151,7 @@ unittest
         auto resolve(string name)
         {
             auto r = theResolver.gethostbyname(name);
-            debug tracef("app resolved %s=%s", name, r);
+            debug(hioresolve) tracef("app resolved %s=%s", name, r);
             return r;
         }
         auto names = [
@@ -1173,7 +1178,7 @@ unittest
         auto resolve(string name)
         {
             auto r = theResolver.gethostbyname6(name);
-            debug tracef("app resolved %s=%s", name, r);
+            debug(hioresolve) tracef("app resolved %s=%s", name, r);
             return r;
         }
         auto names = [
