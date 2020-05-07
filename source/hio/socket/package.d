@@ -665,7 +665,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 // b = null;
                 _input_length += rc;
                 _iorq.to_read -= rc;
-                debug tracef("after adding data %s, %s", _iorq.to_read, _iorq.allowPartialInput);
+                debug tracef("after adding data have space for %s bytes more, allowPartialInput: %s", _iorq.to_read, _iorq.allowPartialInput);
                 if ( _iorq.to_read == 0 || _iorq.allowPartialInput ) {
                     _loop.stopPoll(_fileno, _pollingFor);
                     _polling = AppEvent.NONE;
@@ -695,8 +695,8 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         }
         if ( ev & AppEvent.OUT ) {
             debug tracef("sending %s", _iorq.output);
-            assert(_iorq.output.length>0);
-            auto rc = w(_iorq.output);
+            assert(_result.output.length>0);
+            auto rc = w(_result.output);
             if ( rc < 0 ) {
                 // error sending
                 _loop.stopPoll(_fileno, _pollingFor);
@@ -714,8 +714,8 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 debug tracef("sent");
                 return;
             }
-            _iorq.output.pop(rc);
-            if ( _iorq.output.length == 0 ) {
+            _result.output.pop(rc);
+            if ( _result.output.length == 0 ) {
                 _loop.stopPoll(_fileno, _pollingFor);
                 if ( _io_timer ) {
                     _loop.stopTimer(_io_timer);
