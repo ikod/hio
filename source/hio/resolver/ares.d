@@ -307,7 +307,7 @@ package class Resolver: FileEventHandler
 
         // try to convert string to addr
         int addr;
-        int p = inet_pton(AF_INET, hostname.ptr, &addr);
+        int p = inet_pton(AF_INET, toStringz(hostname), &addr);
         if (p > 0)
         {
             debug(hioresolve) tracef("address converetd from %s", hostname, p);
@@ -468,7 +468,7 @@ package class Resolver: FileEventHandler
 
         // try to convert string to addr
         ubyte[16] addr;
-        int p = inet_pton(AF_INET6, hostname.ptr, addr.ptr);
+        int p = inet_pton(AF_INET6, toStringz(hostname), addr.ptr);
         if (p > 0)
         {
             debug(hioresolve) tracef("address converetd from %s", hostname, p);
@@ -898,6 +898,15 @@ package class Resolver: FileEventHandler
     ///
     auto gethostbyname(F)(string hostname, hlEvLoop loop, F cb) @safe if (isCallable!F)
     {
+        debug(hioresolve) tracef("resolving %s", hostname);
+        int addr;
+        int p = () @trusted {return inet_pton(AF_INET, toStringz(hostname), &addr);}();
+        if (p > 0)
+        {
+            debug(hioresolve) tracef("address converetd from %s", hostname, p);
+            cb(ARES_SUCCESS, [ntohl(addr)]);
+            return;
+        }
         assert(!_loop || _loop is loop);
         if (_loop is null)
         {
