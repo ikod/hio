@@ -25,7 +25,7 @@
         },
         {
             "name": "unittest",
-            "debugVersions": ["nbuff", "hioselect", "hioepoll", "hiohttp", "timingwheels"]
+            "debugVersions": []
         }
     ],
     "lflags": ["-L$HIO_PACKAGE_DIR/submodules/http-parser"],

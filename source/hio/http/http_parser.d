@@ -98,12 +98,12 @@ package extern(C)
                             const char *data,
                             size_t len);
     /* Initialize all http_parser_url members to 0 */
-    void http_parser_url_init(http_parser_url *u);
+    void http_parser_url_init(http_parser_url *u) @trusted;
 
     /* Parse a URL; return nonzero on failure */
     int http_parser_parse_url(const char *buf, size_t buflen,
                             int is_connect,
-                            http_parser_url *u);
+                            http_parser_url *u) @trusted;
 }
 
 unittest

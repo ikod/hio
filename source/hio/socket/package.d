@@ -694,7 +694,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             }
         }
         if ( ev & AppEvent.OUT ) {
-            debug tracef("sending %s", _iorq.output);
+            //debug tracef("sending %s", _iorq.output);
             assert(_result.output.length>0);
             auto rc = w(_result.output);
             if ( rc < 0 ) {

@@ -1,13 +1,15 @@
 module hio.http.common;
 
 import std.string;
+import std.typecons: Tuple;
+
 import std.bitmanip;
 import std.uni;
 
 import std.experimental.logger;
 
 import ikod.containers.compressedlist: CompressedList;
-import nbuff: SmartPtr, Nbuff, smart_ptr;
+import nbuff: SmartPtr, Nbuff, NbuffChunk, smart_ptr;
 
 import hio.http.http_parser;
 
@@ -97,14 +99,14 @@ struct URL
     }
 }
 
-URL parse_url(string url)
+URL parse_url(string url) @safe
 {
-    URL             result;
-    http_parser_url parser;
+    URL                     result;
+    static http_parser_url  parser;
 
     result._url = url;
     http_parser_url_init(&parser);
-    auto l = http_parser_parse_url(url.ptr, url.length, 0, &parser);
+    auto l = http_parser_parse_url(&url[0], url.length, 0, &parser);
     if ( l )
     {
         return result;
@@ -233,6 +235,20 @@ struct _UH {
     uint, "", 1
     ));
 }
+alias ErrorType = Tuple!(int, "code", string, "msg");
+enum AsyncHTTPErrors
+{
+    None    = ErrorType(0, "OK"),
+    Timeout = ErrorType(2, "Timedout"),
+    ResolveFailed
+            = ErrorType(3, "Can't resolve"),
+    ConnFailed
+            = ErrorType(4, "Connection failed"),
+    DataError
+            = ErrorType(5, "Error when receiving data"),
+    MaxRedirectsReached
+            = ErrorType(6, "Max num of redirects reached"),
+}
 
 package struct Request
 {
@@ -290,6 +306,13 @@ package struct Request
     }
 }
 // alias Request = SmartPtr!_Request;
+package struct MessageHeader
+{
+    NbuffChunk  field;
+    NbuffChunk  value;
+}
+
+alias MessageHeaders = CompressedList!MessageHeader;
 
 ushort standard_port(string schema) @safe
 {
