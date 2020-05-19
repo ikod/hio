@@ -85,7 +85,7 @@ struct ZLib
         }
     }
 
-    void zFlush()
+    void zFlush() @trusted
     {
         inflateEnd(&_zstr);
     }

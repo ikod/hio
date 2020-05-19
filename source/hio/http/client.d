@@ -14,6 +14,7 @@ import std.zlib: UnCompress, HeaderFormat;
 import hio.socket;
 import hio.resolver;
 import hio.loop;
+import hio.zlib;
 
 import hio.http.common;
 import hio.http.http_parser;
@@ -237,6 +238,11 @@ class AsyncHTTPClient
         message_header.append(request_line);
         if (_verbosity >= 1) writef("-> %s", request_line.asString!(dup));
 
+        if ( !_request.user_headers_flags.AcceptEncoding )
+        {
+            message_header.append("Accept-Encoding: gzip.deflate\n");
+            if (_verbosity >= 1) writefln("-> %s: %s", "Accept-Encoding", "gzip,deflate");
+        }
         if ( !_request.user_headers_flags.Host )
         {
             message_header.append("Host: ");
@@ -497,6 +503,8 @@ struct AsyncHTTP
         MessageHeaders          _response_headers;
         Nbuff                   _response_headers_buffer;
         ContentEncoding         _content_encoding;
+
+        ZLib                    _zlib;
     }
     ~this()
     {
@@ -508,6 +516,10 @@ struct AsyncHTTP
         _response_body.clear;
         _response_headers.clear;
         _state = State.INIT;
+        if (_content_encoding == ContentEncoding.GZIP || _content_encoding==ContentEncoding.DEFLATE)
+        {
+            _zlib.zFlush();
+        }
         _content_encoding = ContentEncoding.NONE;
     }
 
@@ -521,9 +533,23 @@ struct AsyncHTTP
         if ( _verbosity >= 1 ) {
             writefln("<- %s: %s", cast(string)field.data, cast(string)value.data);
         }
-        if (field.asString!(toLower) == "content-encoding" && value.asString!(toLower) == "gzip")
+        if (field.asString!(toLower) == "content-encoding" )
         {
-            _content_encoding = ContentEncoding.GZIP;
+            string v = value.asString!(toLower);
+            switch (v)
+            {
+                case "gzip":
+                    _content_encoding = ContentEncoding.GZIP;
+                    _zlib.zInit(_client._buffer_size);
+                    break;
+                case "deflate":
+                    _content_encoding = ContentEncoding.DEFLATE;
+                    _zlib.zInit(_client._buffer_size);
+                    break;
+                default:
+                    break;
+            }
+
         }
         else
         {
@@ -628,7 +654,27 @@ struct AsyncHTTP
     {
         import std.stdio;
         NbuffChunk b = _current_input[off..off+len];
-        _response_body.append(b);
+        if ( _content_encoding == ContentEncoding.GZIP || _content_encoding == ContentEncoding.DEFLATE )
+        {
+            int processed = 0;
+            while(processed < b.length)
+            {
+                auto r = _zlib.zInflate(b[processed..$]);
+                processed += r.consumed;
+                if (r.result.length)
+                {
+                    _response_body.append(r.result);
+                }
+                if ( r.status != 0 )
+                {
+                    break;
+                }
+            }
+        }
+        else
+        {
+            _response_body.append(b);
+        }
     }
     private void onBodyComplete()
     {
@@ -729,6 +775,7 @@ unittest
     globalLogLevel = LogLevel.info;
     info("Test http.client");
     App({
+        info("test stream");
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
         {
@@ -747,33 +794,40 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/stream/100");
+        client._verbosity = 1;
         client.execute(Method("GET"), url, &callback);
         hlSleep(25.seconds);
     });
     // test redirects
     App({
+        info("test absolute redirects");
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
         {
             assert(result.status_code == 200);
+            debug writefln("<%s>", cast(string)result.response_body.data.data);
             client.close();
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/absolute-redirect/3");
+        client._verbosity = 1;
         client.execute(Method("GET"), url, &callback);
         hlSleep(25.seconds);
     });
 
     App({
+        info("test absolute redirects with limited redirects number");
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
         {
             assert(result.status_code == -1);
             assert(result.error == AsyncHTTPErrors.MaxRedirectsReached);
+            debug writefln("<%s>", cast(string)result.response_body.data.data);
             client.close();
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/absolute-redirect/3");
+        client._verbosity = 1;
         client._max_redirects = 1;
         client.execute(Method("GET"), url, &callback);
         hlSleep(25.seconds);
@@ -795,13 +849,13 @@ unittest
         hlSleep(10.seconds);
     });
 
-    globalLogLevel = LogLevel.trace;
     App({
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
         {
             () @trusted {
                 assert(result.status_code == 200);
+                writefln("<%s>", cast(string)result.response_body.data.data);
             }();
             client.close();
             getDefaultLoop.stop();
@@ -810,6 +864,25 @@ unittest
         client._connect_timeout = 1.seconds;
         client._verbosity = 1;
         client._request.addHeader(Header("Accept-Encoding","gzip"));
+        client.execute(Method("GET"), url, &callback);
+        hlSleep(10.seconds);
+    });
+    globalLogLevel = LogLevel.trace;
+    App({
+        AsyncHTTPClient client = new AsyncHTTPClient();
+        void callback(AsyncHTTPResult result) @safe
+        {
+            () @trusted {
+                assert(result.status_code == 200);
+                writefln("<%s>", cast(string)result.response_body.data.data);
+            }();
+            client.close();
+            getDefaultLoop.stop();
+        }
+        URL url = parse_url("http://httpbin.org/deflate");
+        client._connect_timeout = 1.seconds;
+        client._verbosity = 1;
+        client._request.addHeader(Header("Accept-Encoding","deflate"));
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });

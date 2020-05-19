@@ -290,6 +290,11 @@ package struct Request
         {
             _user_headers_flags.UserAgent = true;
         }
+        else
+        if (icmp(h.FieldName, "accept-encoding")==0)
+        {
+            _user_headers_flags.AcceptEncoding = true;
+        }
         _user_headers.insertBack(h);
     }
     auto user_headers() @safe @nogc nothrow
