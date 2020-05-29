@@ -21,14 +21,16 @@
     },
     "configurations": [
         {
-            "name": "library"
+            "name": "library",
+	    "versions": ["openssl11"]
         },
         {
             "name": "unittest",
-            "debugVersions": []
+	    "versions": ["openssl11"],
+            "debugVersions": ["hiossl"]
         }
     ],
     "lflags": ["-L$HIO_PACKAGE_DIR/submodules/http-parser"],
-    "libs-posix": ["cares", "http_parser"]
+    "libs-posix": ["cares", "http_parser", "ssl", "crypto"]
 
 }

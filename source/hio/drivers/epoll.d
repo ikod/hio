@@ -341,44 +341,44 @@ struct NativeEventLoopImpl {
     //     _del_kernel_timer();
     // }
 
-    void _add_kernel_timer(Timer t, in Duration d) @trusted {
-        debug trace("add kernel timer");
-        assert(d > 0.seconds);
-        itimerspec itimer;
-        auto ds = d.split!("seconds", "nsecs");
-        itimer.it_value.tv_sec = cast(typeof(itimer.it_value.tv_sec)) ds.seconds;
-        itimer.it_value.tv_nsec = cast(typeof(itimer.it_value.tv_nsec)) ds.nsecs;
-        int rc = timerfd_settime(timer_fd, 0, &itimer, null);
-        enforce(rc >= 0, "timerfd_settime(%s): %s".format(itimer, fromStringz(strerror(errno))));
-        epoll_event e;
-        e.events = EPOLLIN|EPOLLET;
-        e.data.fd = timer_fd;
-        rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer_fd, &e);
-        enforce(rc >= 0, "epoll_ctl add(%s): %s".format(e, fromStringz(strerror(errno))));
-    }
-    void _mod_kernel_timer(Timer t, in Duration d) @trusted {
-        debug tracef("mod kernel timer to %s", t);
-        assert(d >= 0.seconds, "Illegal timer %s".format(d));
-        itimerspec itimer;
-        auto ds = d.split!("seconds", "nsecs");
-        itimer.it_value.tv_sec = cast(typeof(itimer.it_value.tv_sec)) ds.seconds;
-        itimer.it_value.tv_nsec = cast(typeof(itimer.it_value.tv_nsec)) ds.nsecs;
-        int rc = timerfd_settime(timer_fd, 0, &itimer, null);
-        enforce(rc >= 0, "timerfd_settime(%s): %s".format(itimer, fromStringz(strerror(errno))));
-        epoll_event e;
-        e.events = EPOLLIN|EPOLLET;
-        e.data.fd = timer_fd;
-        rc = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, timer_fd, &e);
-        enforce(rc >= 0);
-    }
-    void _del_kernel_timer() @trusted {
-        debug trace("del kernel timer");
-        epoll_event e;
-        e.events = EPOLLIN;
-        e.data.fd = timer_fd;
-        int rc = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, timer_fd, &e);
-        enforce(rc >= 0, "epoll_ctl del(%s): %s".format(e, fromStringz(strerror(errno))));
-    }
+    // void _add_kernel_timer(Timer t, in Duration d) @trusted {
+    //     debug trace("add kernel timer");
+    //     assert(d > 0.seconds);
+    //     itimerspec itimer;
+    //     auto ds = d.split!("seconds", "nsecs");
+    //     itimer.it_value.tv_sec = cast(typeof(itimer.it_value.tv_sec)) ds.seconds;
+    //     itimer.it_value.tv_nsec = cast(typeof(itimer.it_value.tv_nsec)) ds.nsecs;
+    //     int rc = timerfd_settime(timer_fd, 0, &itimer, null);
+    //     enforce(rc >= 0, "timerfd_settime(%s): %s".format(itimer, fromStringz(strerror(errno))));
+    //     epoll_event e;
+    //     e.events = EPOLLIN|EPOLLET;
+    //     e.data.fd = timer_fd;
+    //     rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer_fd, &e);
+    //     enforce(rc >= 0, "epoll_ctl add(%s): %s".format(e, fromStringz(strerror(errno))));
+    // }
+    // void _mod_kernel_timer(Timer t, in Duration d) @trusted {
+    //     debug tracef("mod kernel timer to %s", t);
+    //     assert(d >= 0.seconds, "Illegal timer %s".format(d));
+    //     itimerspec itimer;
+    //     auto ds = d.split!("seconds", "nsecs");
+    //     itimer.it_value.tv_sec = cast(typeof(itimer.it_value.tv_sec)) ds.seconds;
+    //     itimer.it_value.tv_nsec = cast(typeof(itimer.it_value.tv_nsec)) ds.nsecs;
+    //     int rc = timerfd_settime(timer_fd, 0, &itimer, null);
+    //     enforce(rc >= 0, "timerfd_settime(%s): %s".format(itimer, fromStringz(strerror(errno))));
+    //     epoll_event e;
+    //     e.events = EPOLLIN|EPOLLET;
+    //     e.data.fd = timer_fd;
+    //     rc = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, timer_fd, &e);
+    //     enforce(rc >= 0);
+    // }
+    // void _del_kernel_timer() @trusted {
+    //     debug trace("del kernel timer");
+    //     epoll_event e;
+    //     e.events = EPOLLIN;
+    //     e.data.fd = timer_fd;
+    //     int rc = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, timer_fd, &e);
+    //     enforce(rc >= 0, "epoll_ctl del(%s): %s".format(e, fromStringz(strerror(errno))));
+    // }
     //
     // notifications
     //

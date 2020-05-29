@@ -95,6 +95,7 @@ interface AsyncSocketLike
     bool connected() @safe;
     void bind(Address addr);
     bool connect(Address addr, hlEvLoop loop, HandlerDelegate f, Duration timeout) @safe;
+    void accept(hlEvLoop loop, Duration timeout, void delegate(int) @safe f) @safe;
     int  io(hlEvLoop, IORequest, Duration) @safe;
 }
 
@@ -602,7 +603,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         return true;
     }
 
-    public void accept(T)(hlEvLoop loop, Duration timeout, T f) {
+    override public void accept(hlEvLoop loop, Duration timeout, void delegate(int) @safe f) {
         _loop = loop;
         _accept_callback = f;
         _state = State.ACCEPTING;
@@ -1135,9 +1136,11 @@ class HioSocket
         return _accept_socket;
     }
     ///
-    IOResult recv(size_t n, Duration timeout = 10.seconds) @trusted {
+    IOResult recv(size_t n, Duration timeout = 10.seconds, Flag!"allowPartialInput" allowPartialInput = Yes.allowPartialInput) @trusted {
         IORequest ioreq;
         IOResult  iores;
+
+        ioreq.allowPartialInput = cast(bool)allowPartialInput;
 
         _fiber = Fiber.getThis();
         if ( _fiber is null) {

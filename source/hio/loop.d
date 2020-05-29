@@ -82,7 +82,7 @@ final class hlEvLoop {
         string                        _name;
 
     public:
-        void delegate(scope Duration = Duration.max)                      run;
+        void delegate(scope Duration = Duration.max)       run;
         @safe void delegate()                              stop;
         @safe void delegate(Timer)                         startTimer;
         @safe void delegate(Timer)                         stopTimer;

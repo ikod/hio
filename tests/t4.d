@@ -50,7 +50,7 @@ void server(int so)
             }
             client_socket.close();
         }
-        void ioReadCompleted(IOResult iores) @trusted
+        void ioReadCompleted(IOResult iores)
         {
             if ( !iores.timedout && !iores.error )
             {

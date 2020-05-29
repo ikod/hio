@@ -41,11 +41,13 @@ shared static this() {
     ];
 }
 
+///
 alias HandlerDelegate = void delegate(AppEvent) @safe;
 alias SigHandlerDelegate = void delegate(int) @safe;
 alias FileHandlerFunction = void function(int, AppEvent) @safe;
 //alias NotificationHandler = void delegate(Notification) @safe;
 alias FileHandlerDelegate = void delegate(int, AppEvent) @safe;
+alias IOCallback = void delegate(IOResult) @safe;
 
 string appeventToString(AppEvent ev) @safe pure {
     import std.format;
@@ -210,13 +212,15 @@ final class Signal {
     }
 }
 
+
 struct IORequest {
     size_t              to_read = 0;
     bool                allowPartialInput = true;
     Nbuff               output;
 
-    void delegate(IOResult) @safe callback;
+    IOCallback          callback;
 }
+
 struct IOResult {
     NbuffChunk          input;
     Nbuff               output;     // updated output slice
@@ -229,204 +233,3 @@ struct IOResult {
 }
 
 
-struct CircBuff(T) {
-    enum Size = 512;
-    private
-    {
-        ushort start=0, length = 0;
-        T[Size] queue;
-    }
-
-    invariant
-    {
-        assert(length<=Size);
-        assert(start<Size);
-    }
-
-    auto get() @safe
-    in
-    {
-        assert(!empty);
-    }
-    out
-    {
-        assert(!full);
-    }
-    do
-    {
-        enforce(!empty);
-        auto v = queue[start];
-        length--;
-        start = (++start) % Size;
-        return v;
-    }
-
-    void put(T v) @safe
-    in
-    {
-        assert(!full);
-    }
-    out
-    {
-        assert(!empty);
-    }
-    do
-    {
-        enforce(!full);
-        queue[(start + length)%Size] = v;
-        length++;
-    }
-    bool empty() const @safe @property @nogc nothrow {
-        return length == 0;
-    }
-    bool full() const @safe @property @nogc nothrow {
-        return length == Size;
-    }
-}
-
-alias Broadcast = Flag!"broadcast";
-
-//struct NotificationDelivery {
-//    Notification _n;
-//    Broadcast    _broadcast;
-//}
-
-//class Notification {
-//    import  containers;
-//
-//    private SList!(void delegate(Notification) @safe) _subscribers;
-//
-//    void handler(Broadcast broadcast = Yes.broadcast) @trusted {
-//        debug tracef("Handle %s".format(broadcast));
-//        if ( broadcast )
-//        {
-//            debug tracef("subscribers %s".format(_subscribers.range));
-//            foreach(s; _subscribers.range) {
-//                debug tracef("subscriber %s".format(&s));
-//                s(this);
-//                debug tracef("subscriber %s - done".format(&s));
-//            }
-//        } else
-//        {
-//            auto s = _subscribers.front;
-//            s(this);
-//        }
-//    }
-//
-//    void subscribe(void delegate(Notification) @safe s) @safe @nogc nothrow {
-//        _subscribers ~= s;
-//    }
-//
-//    void unsubscribe(void delegate(Notification) @safe s) @safe @nogc {
-//        _subscribers.remove(s);
-//    }
-//}
-//@safe unittest {
-//    import std.stdio;
-//    class TestNotification : Notification {
-//        int _v;
-//        this(int v) {
-//            _v = v;
-//        }
-//    }
-//    
-//    auto ueq = CircBuff!Notification();
-//    assert(ueq.empty);
-//    assert(!ueq.full);
-//    foreach(i;0..ueq.Size) {
-//        auto ue = new TestNotification(i);
-//        ueq.put(ue);
-//    }
-//    assert(ueq.full);
-//    foreach(n;0..ueq.Size) {
-//        auto i = ueq.get();
-//        assert(n==(cast(TestNotification)i)._v);
-//    }
-//    assert(ueq.empty);
-//    foreach(i;0..ueq.Size) {
-//        auto ue = new TestNotification(i);
-//        ueq.put(ue);
-//    }
-//    assert(ueq.full);
-//    foreach(n;0..ueq.Size) {
-//        auto i = ueq.get();
-//        assert(n==(cast(TestNotification)i)._v);
-//    }
-//    //
-//    int testvar;
-//    void d1(Notification n) @safe {
-//        testvar++;
-//        auto v = cast(TestNotification)n;
-//    }
-//    void d2(Notification n) {
-//        testvar--;
-//    }
-//    auto n1 = new TestNotification(1);
-//    n1.subscribe(&d1);
-//    n1.subscribe(&d2);
-//    n1.subscribe(&d1);
-//    n1.handler(Yes.broadcast);
-//    assert(testvar==1);
-//    n1.unsubscribe(&d2);
-//    n1.handler(Yes.broadcast);
-//    assert(testvar==3);
-//}
-
-//class Subscription {
-//    NotificationChannel     _channel;
-//    void delegate() @safe   _handler;
-//    shared this(shared NotificationChannel c, void delegate() @safe h) @safe nothrow {
-//        _channel = c;
-//        _handler = h;
-//    }
-//}
-//
-//private shared int shared_notifications_id;
-//shared class SharedNotification {
-//    import containers;
-//    import core.atomic;
-//    private {
-//        int                     _n_id;
-//        //private shared SList!Subscription   _subscribers;
-//        private Subscription[]  _subscribers;
-//    }
-//
-//    shared this() @safe {
-//        _n_id = shared_notifications_id;
-//        atomicOp!"+="(shared_notifications_id, 1);
-//    }
-//
-//    void handler(Broadcast broadcast = Yes.broadcast) @safe {
-//        if ( broadcast )
-//        {
-//            //foreach(s; _subscribers) {
-//            //    s(this);
-//            //}
-//        } else
-//        {
-//            //auto s = _subscribers.front;
-//            //s(this);
-//        }
-//    }
-//
-//    void subscribe(NotificationChannel c, void delegate() @safe s) @safe nothrow shared {
-//        _subscribers ~= new shared Subscription(c, s);
-//    }
-//
-//    void unsubscribe(NotificationChannel c, void delegate() @safe s) @safe {
-//        //_subscribers.remove(Subscription(c, s));
-//    }
-//}
-
-
-@safe unittest {
-    //info("testing shared notifications");
-    //auto sna = new shared SharedNotification();
-    //auto snb = new shared SharedNotification();
-    //assert(sna._n_id == 0);
-    //assert(snb._n_id == 1);
-    //shared NotificationChannel c = new shared NotificationChannel;
-    //shared SharedNotification sn = new shared SharedNotification();
-    //sn.subscribe(c, delegate void() {});
-    //info("testing shared notifications - done");
-}

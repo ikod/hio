@@ -319,7 +319,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
         }
     }
 
-    final this(F f, A args)
+    final this(F f, A args) @safe
     {
         _f = f;
         _args = args;
@@ -331,11 +331,15 @@ class Task(F, A...) : Computation if (isCallable!F) {
         if (fiberPoolSize>0)
         {
             _executor = fiberPool[--fiberPoolSize];
-            _executor.reset(&run);
+            () @trusted {
+                _executor.reset(&run);
+            }();
         }
         else
         {
-            _executor = new Fiber(&run);
+            () @trusted {
+                _executor = new Fiber(&run);
+            }();
         }
         //super(&run);
     }
@@ -343,7 +347,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
     {
         return _executor.call(r);
     }
-    void start()
+    void start() @trusted
     {
         _executor.call();
     }
