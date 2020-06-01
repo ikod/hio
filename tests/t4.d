@@ -33,15 +33,15 @@ void server(int so)
     auto loop = getDefaultLoop();
     auto server_socket = new hlSocket(so);
 
-    void acceptFunction(int s) @safe
+    void acceptFunction(AsyncSocketLike s) @safe
     {
-        if ( s == -1 )
+        if ( s is null )
         {
             // timeout
             server_socket.accept(loop, 5.seconds, &acceptFunction);
             return;
         }
-        auto client_socket = new hlSocket(s);
+        auto client_socket = cast(hlSocket)s;
         void ioWriteCompleted(IOResult iores)
         {
             if (iores.error)

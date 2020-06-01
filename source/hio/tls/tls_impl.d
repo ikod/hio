@@ -5,6 +5,7 @@ import hio.tls.common;
 
 import std.socket;
 import std.datetime;
+import std.string;
 import std.experimental.logger;
 
 import hio.loop;
@@ -21,6 +22,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
         {
             INIT,
             CONNECTING,
+            ACCEPTING,
             IO,
             IDLE,
             ERROR,
@@ -38,7 +40,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
         Timer               _timer;
         int                 _polling_for;
         HandlerDelegate     _callback;
-
+        void delegate(AsyncSocketLike) @safe _accept_callback;
         bool                _ssl_connected;
         IOResult            _ioResult;
         IOCallback          _ioCallback;
@@ -46,13 +48,16 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
         bool                _allowPartialInput = true;
         MutableNbuffChunk   _input;
         int                 _io_depth; // see io()
+        string              _host;     // for SNI
+        string              _cert_file;
+        string              _key_file;
     }
     this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__)
     {
         _so = new hlSocket(af, sock_type, f, l);
     }
 
-    this(hlSocket so)
+    this(hlSocket so) @safe
     {
         _so = so;
     }
@@ -113,6 +118,37 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
                         stop_in();
                         stop_out();
                         cb(AppEvent.OUT);
+                        return;
+                    case SSL_connect_call_result.WANT_READ:
+                        debug (hiossl) tracef ("want read");
+                        want_in();
+                        return;
+                    case SSL_connect_call_result.WANT_WRITE:
+                        debug (hiossl) tracef ("want write");
+                        want_out();
+                        return;
+                }
+                assert(0);
+            }
+            else if ( _state == State.ACCEPTING )
+            {
+                immutable cb = _accept_callback;
+                immutable connect_result = handleAcceptEvent();
+                final switch(connect_result)
+                {
+                    case SSL_connect_call_result.ERROR:
+                        _callback = null;
+                        stop_in();
+                        stop_out();
+                        cb(this);
+                        return;
+                    case SSL_connect_call_result.CONNECTED:
+                        _ssl_connected = true;
+                        _callback = null;
+                        _state = State.IDLE;
+                        stop_in();
+                        stop_out();
+                        cb(this);
                         return;
                     case SSL_connect_call_result.WANT_READ:
                         debug (hiossl) tracef ("want read");
@@ -212,12 +248,6 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
     override bool open() @safe
     {
         _so.open();
-        version (openssl11)
-        {
-            _ctx = SSL_CTX_new(TLS_client_method());
-            _ssl = SSL_new(_ctx);
-            SSL_set_fd(_ssl, cast(int) _so.fileno);
-        }
         return true;
     }
 
@@ -253,7 +283,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
 
     override void bind(Address addr) @safe
     {
-
+        _so.bind(addr);
     }
 
     private void io_callback(int fd, AppEvent ev)
@@ -267,6 +297,44 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
 
     }
 
+    private SSL_connect_call_result handleAcceptEvent() @safe
+    {
+        auto result = SSL_accept(_ssl);
+        debug (hiossl) tracef("SSL_accept rc=%d", result);
+
+        if (result == 0)
+        {
+            long error = ERR_get_error();
+            const char* error_str = ERR_error_string(error, null);
+            debug (hiossl) tracef ("could not SSL_accept: %s\n", error_str);
+            return SSL_connect_call_result.ERROR;
+        }
+        if (result > 0)
+        {
+            // connected
+            _ssl_connected = true;
+            return SSL_connect_call_result.CONNECTED;
+        }
+        // result < 0, have to continue
+        // ssl want read or write
+        int ssl_error = SSL_get_error(_ssl, result);
+        debug (hiossl) tracef ("SSL_signal: %s", ssl_error);
+        switch(ssl_error)
+        {
+            case SSL_ERROR_WANT_READ:
+                debug (hiossl) tracef ("want read");
+                return SSL_connect_call_result.WANT_READ;
+            case SSL_ERROR_WANT_WRITE:
+                debug (hiossl) tracef ("want write");
+                return SSL_connect_call_result.WANT_WRITE;
+            case SSL_ERROR_SSL:
+                debug(hiossl) tracef("ssl handshake failure");
+                return SSL_connect_call_result.ERROR;
+            default:
+                warning("while accepting: %s", SSL_error_strings[ssl_error]);
+                return SSL_connect_call_result.ERROR;
+        }
+    }
     private SSL_connect_call_result handleConnectEvent() @safe
     {
         auto result = SSL_connect(_ssl);
@@ -297,14 +365,108 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
             case SSL_ERROR_WANT_WRITE:
                 debug (hiossl) tracef ("want write");
                 return SSL_connect_call_result.WANT_WRITE;
+            case SSL_ERROR_SSL:
+                debug(hiossl) tracef("ssl handshake failure");
+                return SSL_connect_call_result.ERROR;
             default:
-                assert(0);
+                assert(0, SSL_error_strings[ssl_error]);
         }
     }
-    override void accept(hlEvLoop loop, Duration timeout, void delegate(int) @safe callback) @safe
+    void listen(int backlog = 512)
     {
-        
+        _so.listen(backlog);
     }
+    override void accept(hlEvLoop loop, Duration timeout, void delegate(AsyncSocketLike) @safe callback) @safe
+    {
+        _loop = loop;
+        void so_accept_callback(AsyncSocketLike s) @safe
+        {
+            debug(hiossl) tracef("ssl callback %s", s);
+            if ( s is null )
+            {
+                callback(s);
+                return;
+            }
+            // set up ssl on this socket
+            hlSocket new_so = cast(hlSocket)s;
+            assert(new_so.connected);
+            AsyncSSLSocket new_ssl_so = new AsyncSSLSocket(new_so);
+            new_ssl_so._loop = loop;
+            new_ssl_so._so = new_so;
+            new_ssl_so._state = State.ACCEPTING;
+            new_ssl_so._accept_callback = callback;
+
+            new_ssl_so._ctx = SSL_CTX_new(TLS_server_method());
+            if ( _cert_file )
+            {
+                new_ssl_so._cert_file = _cert_file;
+                int r = SSL_CTX_use_certificate_file(new_ssl_so._ctx, toStringz(_cert_file), SSL_FILETYPE_PEM);
+                assert(r==1);
+            }
+            if ( _key_file )
+            {
+                new_ssl_so._key_file = _key_file;
+                int r = SSL_CTX_use_PrivateKey_file(new_ssl_so._ctx, toStringz(_key_file), SSL_FILETYPE_PEM);
+                assert(r==1);
+            }
+
+            //SSL_CTX_set_cipher_list(new_ssl_so._ctx, &"ALL:!MEDIUM:!LOW"[0]);
+
+            new_ssl_so._ssl = SSL_new(new_ssl_so._ctx);
+            SSL_set_fd(new_ssl_so._ssl, cast(int) new_ssl_so._so.fileno);
+            SSL_set_accept_state(new_ssl_so._ssl);
+            // start negotiation
+            auto accept_result = new_ssl_so.handleAcceptEvent();
+            final switch(accept_result)
+            {
+                case SSL_connect_call_result.ERROR:
+                    new_ssl_so._state = State.ERROR;
+                    callback(new_ssl_so);
+                    return;
+                case SSL_connect_call_result.CONNECTED:
+                    new_ssl_so._ssl_connected = true;
+                    _state = State.IDLE;
+                    callback(new_ssl_so);
+                    return;
+                case SSL_connect_call_result.WANT_READ:
+                    debug (hiossl) tracef ("want read");
+                    new_ssl_so.want_in();
+                    return;
+                case SSL_connect_call_result.WANT_WRITE:
+                    debug (hiossl) tracef ("want write");
+                    new_ssl_so.want_out();
+                    return;
+            }
+        }
+        _so.accept(_loop, timeout, &so_accept_callback);
+    }
+    ///
+    /// turn on and set "host" for server name indeication(SNI)
+    /// call this before call to connect
+    ///
+    public void set_host(string host) @safe
+    {
+        _host = host;
+    }
+    ///
+    public void cert_file(string cert_file)
+    {
+        _cert_file = cert_file;
+    }
+    ///
+    public void key_file(string key_file)
+    {
+        _key_file = key_file;
+    }
+    private void SSL_set_tlsext_host_name() @trusted nothrow {
+        enum int SSL_CTRL_SET_TLSEXT_HOSTNAME = 55;
+        enum long TLSEXT_NAMETYPE_host_name = 0;
+        if ( _host )
+        {
+            SSL_ctrl(_ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME,TLSEXT_NAMETYPE_host_name, cast(void*)toStringz(_host));
+        }
+    }
+
     override bool connect(Address addr, hlEvLoop loop, HandlerDelegate callback, Duration timeout) @safe
     {
         assert(_loop is null);
@@ -332,6 +494,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
                 return;
             }
             SSL_set_connect_state(_ssl);
+            SSL_set_tlsext_host_name();
             immutable connect_result = handleConnectEvent();
             final switch(connect_result)
             {
@@ -354,6 +517,9 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
                     return;
             }
         }
+        _ctx = SSL_CTX_new(TLS_client_method());
+        _ssl = SSL_new(_ctx);
+        SSL_set_fd(_ssl, cast(int) _so.fileno);
         return _so.connect(addr, loop, &so_connect_callback, timeout);
     }
 

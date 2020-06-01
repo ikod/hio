@@ -365,7 +365,7 @@ unittest {
     globalLogLevel = LogLevel.info;
     info(" === Testing sockets ===");
     import std.string, std.stdio;
-    import hio.socket: hlSocket;
+    import hio.socket;
 
     auto native = new hlEvLoop();
     auto fallb = new hlEvLoop(Mode.FALLBACK);
@@ -380,8 +380,8 @@ unittest {
         immutable(ubyte)[] response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".representation;
         string request = "GET / HTTP/1.1\r\nId: %d\r\n\r\n";
     
-        void server_handler(int so) @safe {
-            auto s = new hlSocket(so);
+        void server_handler(AsyncSocketLike so) @safe {
+            auto s = cast(hlSocket)so;
             tracef("server accepted on %s", s.fileno());
             IORequest iorq;
             iorq.to_read = 512;

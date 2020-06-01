@@ -61,27 +61,37 @@ package struct SSL {}
 package struct SSL_CTX {}
 package struct SSL_METHOD {}
 
+enum SSL_FILETYPE_PEM = 1;
+
 package extern(C)
 {
     int         OPENSSL_init_ssl(ulong, void*) @trusted nothrow;
     int         OPENSSL_init_crypto(ulong, void*) @trusted nothrow;
     SSL_METHOD* TLS_method() @trusted nothrow;
     SSL_METHOD* TLS_client_method() @trusted nothrow;
+    SSL_METHOD* TLS_server_method() @trusted nothrow;
     SSL_CTX*    SSL_CTX_new(SSL_METHOD*) @trusted nothrow;
     void        SSL_CTX_free(SSL_CTX*) @trusted nothrow;
+    int         SSL_CTX_use_PrivateKey_file(SSL_CTX*, const char*, int) @trusted nothrow;
+    int         SSL_CTX_use_certificate_file(SSL_CTX*, const char*, int) @trusted nothrow;
+    void        SSL_CTX_set_verify(SSL_CTX*, int, void*) @trusted nothrow;
+    int         SSL_CTX_set_cipher_list(SSL_CTX*, const char *str) @trusted nothrow;
     SSL*        SSL_new(SSL_CTX*) @trusted nothrow;
     int         SSL_set_fd(SSL*, int) @trusted nothrow;
     int         SSL_connect(SSL*) @trusted nothrow;
+    int         SSL_accept(SSL*) @trusted nothrow;
     int         SSL_get_error(SSL*, int) @trusted nothrow;
     long        SSL_ctrl(SSL*, int, long, void*) @trusted nothrow;
     void        SSL_set_connect_state(SSL*) @trusted nothrow;
     void        SSL_set_accept_state(SSL*) @trusted nothrow;
+    int         SSL_set_cipher_list(SSL *ssl, const char *str) @trusted nothrow;
     int         SSL_read(SSL*, void *, int) @trusted nothrow;
     int         SSL_write(SSL*, void*, int) @trusted nothrow;
     void        SSL_free(SSL*) @trusted nothrow;
     char*       ERR_reason_error_string(ulong) @trusted nothrow;
     char*       ERR_error_string(ulong, char*) @trusted nothrow;
     ulong       ERR_get_error() @trusted nothrow;
+    long        SSL_ctrl(SSL*, int, long, void*) @trusted nothrow;
 }
 
 void init_ssl_library()
