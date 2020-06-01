@@ -95,7 +95,7 @@ interface AsyncSocketLike
     bool connected() @safe;
     void bind(Address addr);
     bool connect(Address addr, hlEvLoop loop, HandlerDelegate f, Duration timeout) @safe;
-    void accept(hlEvLoop loop, Duration timeout, void delegate(int) @safe f) @safe;
+    void accept(hlEvLoop loop, Duration timeout, void delegate(AsyncSocketLike) @safe f) @safe;
     int  io(hlEvLoop, IORequest, Duration) @safe;
 }
 
@@ -123,7 +123,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         State                _state = State.NEW;
         HandlerDelegate      _callback;
         // accept related fields
-        void delegate(int) @safe _accept_callback;
+        void delegate(AsyncSocketLike) @safe _accept_callback;
         // io related fields
         IORequest           _iorq;
         IOResult            _result;
@@ -228,7 +228,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             _loop.stopPoll(_fileno, AppEvent.IN);
             _loop.detach(_fileno);
             _state = State.IDLE;
-            _accept_callback(-1);
+            _accept_callback(null);
             return;
         case State.IO:
             assert(0);
@@ -301,14 +301,13 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 }
                 auto flags = (() @trusted => fcntl(new_s, F_GETFL, 0) | O_NONBLOCK)();
                 (() @trusted => fcntl(new_s, F_SETFL, flags))();
-                //hlSocket ns = new hlSocket(_af, _sock_type, new_s);
-                //fd2so[new_s] = ns;
-                //_accept_callback(ns);
                 if ( _connect_timer ) {
                     _loop.stopTimer(_connect_timer);
                     _connect_timer = null;
                 }
-                _accept_callback(new_s);
+                hlSocket ns = new hlSocket(new_s, _af, _sock_type);
+                ns._connected = true;
+                _accept_callback(ns);
                 debug tracef("accept_callback for fd: %d - done", new_s);
             }
             //_handler(e);
@@ -365,26 +364,31 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         _iorq = IORequest();
         _result = IOResult();
     }
-    public void bind(Address addr)
+    public void bind(Address addr) @safe
     {
          switch (_af) {
              case AF_INET:
                 {
                     import core.sys.posix.netinet.in_;
-                    sockaddr_in *sin = cast(sockaddr_in*)(addr.name);
-                    int flag = 1;
-                    auto rc = .setsockopt(_fileno, SOL_SOCKET, SO_REUSEADDR, &flag, flag.sizeof);
-                    debug tracef("setsockopt for bind result: %d", rc);
-                    if ( rc != 0 ) {
-                    throw new Exception(to!string(strerror(errno())));
-                    }
-                    rc = .bind(_fileno, cast(sockaddr*)sin, cast(uint)sin.sizeof);
-                    debug {
-                        tracef("bind result: %d", rc);
-                    }
-                    if ( rc != 0 ) {
-                        throw new SocketException(to!string(strerror(errno())));
-                    }
+                    InternetAddress ia = cast(InternetAddress)addr;
+                    static int flag = 1;
+                    int rc;
+                    () @trusted {
+                        debug tracef("binding fileno %s to %s", _fileno, ia);
+                        auto rc = .setsockopt(_fileno, SOL_SOCKET, SO_REUSEADDR, &flag, flag.sizeof);
+                        debug tracef("setsockopt for bind result: %d", rc);
+                        if ( rc != 0 ) {
+                            throw new Exception(to!string(strerror(errno())));
+                        }
+                        sockaddr_in sock_addr = {AF_INET, htons(ia.port), {htonl(ia.addr)}};
+                        rc = .bind(_fileno, cast(sockaddr*)&sock_addr, cast(uint)sock_addr.sizeof);
+                        debug {
+                            tracef("bind result: %d", rc);
+                        }
+                        if ( rc != 0 ) {
+                            throw new SocketException(to!string(strerror(errno())));
+                        }
+                    }();
                 }
                 break;
              case AF_UNIX:
@@ -603,7 +607,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         return true;
     }
 
-    override public void accept(hlEvLoop loop, Duration timeout, void delegate(int) @safe f) {
+    override public void accept(hlEvLoop loop, Duration timeout, void delegate(AsyncSocketLike) @safe f) {
         _loop = loop;
         _accept_callback = f;
         _state = State.ACCEPTING;
@@ -618,7 +622,15 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         import core.sys.posix.sys.uio: iovec, writev;
         iovec[8] iov;
         int n = b.toIoVec(&iov[0], 8);
-        long r = .writev(_fileno, &iov[0], n);
+        msghdr hdr;
+        hdr.msg_iov = &iov[0];
+        hdr.msg_iovlen = n;
+        version(linux)
+        {
+            int flags = MSG_NOSIGNAL;
+        }
+        long r = sendmsg(_fileno, &hdr, flags);
+        // long r = .writev(_fileno, &iov[0], n);
         return r;
     }
 
@@ -856,7 +868,11 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
     * returns what os-level send returns
     **/
     long send(immutable(ubyte)[] data) @trusted {
-        return .send(_fileno, data.ptr, data.length, 0);
+        version(linux)
+        {
+            int flags = MSG_NOSIGNAL;
+        }
+        return .send(_fileno, data.ptr, data.length, flags);
     }
     /**************************************************************************
      * Send data from data buffer
@@ -1108,9 +1124,9 @@ class HioSocket
     }
     ///
     private HioSocket _accept_socket;
-    void accept_callback(int fileno) scope @trusted {
-        debug tracef("Got %d on accept", fileno);
-        if ( fileno < 0 ) {
+    void accept_callback(AsyncSocketLike so) scope @trusted {
+        debug tracef("Got %s on accept", so);
+        if ( so is null ) {
             _accept_socket = null;
             _fiber.call();
             return;
@@ -1121,7 +1137,8 @@ class HioSocket
             _socket._polling &= ~AppEvent.IN;
         }
         _socket._state = hlSocket.State.IDLE;
-        _accept_socket = new HioSocket(fileno);
+        _accept_socket = new HioSocket();
+        _accept_socket._socket = cast(hlSocket)so;
         _fiber.call();
     }
     auto accept(Duration timeout = Duration.max) {
