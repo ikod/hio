@@ -132,7 +132,7 @@ URL parse_url(string url) @safe
             }
             else if (result._schema.toLower == "https")
             {
-                result._schemaCode = SchCode.HTTP;
+                result._schemaCode = SchCode.HTTPS;
                 if ( !result._port )
                 {
                     result._port = 443;

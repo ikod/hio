@@ -14,6 +14,16 @@ import hio.scheduler;
 
 import nbuff: NbuffChunk, Nbuff, MutableNbuffChunk;
 
+version(Posix)
+{
+    // see https://github.com/ikod/hio/issues/1
+    import core.sys.posix.signal;
+    shared static this()
+    {
+        signal(SIGPIPE, SIG_IGN);
+    }
+}
+
 class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
 {
     private
@@ -52,7 +62,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
         string              _cert_file;
         string              _key_file;
     }
-    this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__)
+    this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) @safe
     {
         _so = new hlSocket(af, sock_type, f, l);
     }
@@ -556,7 +566,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
             if ( result <= 0)
             {
                 immutable int reason = SSL_get_error(_ssl, result);
-                debug(hiossl) tracef("result %d, reason %d", result, SSL_error_strings[reason]);
+                debug(hiossl) tracef("result %d, reason %s", result, SSL_error_strings[reason]);
                 _ioResult.error = true;
                 break;
                 // _ioCallback(_ioResult);

@@ -15,6 +15,7 @@ import hio.socket;
 import hio.resolver;
 import hio.loop;
 import hio.zlib;
+import hio.tls;
 
 import hio.http.common;
 import hio.http.http_parser;
@@ -29,6 +30,13 @@ AsyncSocketLike socketFabric(URL url) @safe
     if ( url.schemaCode == SchCode.HTTP )
     {
         auto s = new hlSocket();
+        s.open();
+        return s;
+    }
+    if ( url.schemaCode == SchCode.HTTPS )
+    {
+        debug(hiohttp) trace("use ssl socket");
+        auto s = new AsyncSSLSocket();
         s.open();
         return s;
     }
@@ -867,7 +875,7 @@ unittest
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });
-    globalLogLevel = LogLevel.trace;
+    globalLogLevel = LogLevel.info;
     App({
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
@@ -883,6 +891,25 @@ unittest
         client._connect_timeout = 1.seconds;
         client._verbosity = 1;
         client._request.addHeader(Header("Accept-Encoding","deflate"));
+        client.execute(Method("GET"), url, &callback);
+        hlSleep(10.seconds);
+    });
+    globalLogLevel = LogLevel.trace;
+    App({
+        AsyncHTTPClient client = new AsyncHTTPClient();
+        void callback(AsyncHTTPResult result) @safe
+        {
+            () @trusted {
+                assert(result.status_code == 200);
+                writefln("<%s>", cast(string)result.response_body.data.data);
+            }();
+            client.close();
+            getDefaultLoop.stop();
+        }
+        URL url = parse_url("https://httpbin.org/gzip");
+        client._connect_timeout = 1.seconds;
+        client._verbosity = 1;
+        client._request.addHeader(Header("Accept-Encoding","gzip"));
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });
