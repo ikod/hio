@@ -10,8 +10,9 @@
 	    "cd $HIO_PACKAGE_DIR/submodules/http-parser && make package"
     ],
     "dependencies": {
-        "nbuff": "~>0",
-        "timingwheels": "*"
+        "nbuff": "~>0.1",
+        "timingwheels": "~>0",
+	"ikod-containers": "~>0"
     },
     "buildTypes": {
         "release": {

@@ -38,6 +38,7 @@ AsyncSocketLike socketFabric(URL url) @safe
         debug(hiohttp) trace("use ssl socket");
         auto s = new AsyncSSLSocket();
         s.open();
+        s.set_host(url.host);
         return s;
     }
     assert(0);
