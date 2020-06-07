@@ -8,6 +8,7 @@ import std.uni;
 
 import std.experimental.logger;
 
+import ikod.containers.hashmap: HashMap;
 import ikod.containers.compressedlist: CompressedList;
 import nbuff: SmartPtr, Nbuff, NbuffChunk, smart_ptr;
 
@@ -254,10 +255,10 @@ package struct Request
 {
     private
     {
-        Method                  _method;
-        CompressedList!Header   _user_headers;
-        _UH                     _user_headers_flags;
-        Nbuff                   _body;
+        Method                      _method;
+        HashMap!(string, Header)    _user_headers;
+        _UH                         _user_headers_flags;
+        Nbuff                       _body;
     }
     ~this()
     {
@@ -279,27 +280,39 @@ package struct Request
     {
         return _method.name;
     }
-    void addHeader(Header h) @safe @nogc nothrow
+    ///
+    void addHeader(Header h) @safe
     {
-        if (icmp(h.FieldName, "host")==0)
+        // save header as user supplied
+        // use lower-case'd field as key in hashmap
+        // pro: fast replace, send header as user supplied
+        // contra: - extra `toLower` call
+        string field = h.FieldName.toLower();
+        switch(field)
         {
-            _user_headers_flags.Host = true;
+            case "host":
+                _user_headers_flags.Host = true;
+                break;
+            case "useragent":
+                _user_headers_flags.UserAgent = true;
+                break;
+            case "accept-encoding":
+                _user_headers_flags.AcceptEncoding = true;
+                break;
+            case "content-length":
+                _user_headers_flags.ContentLength = true;
+                break;
+            case "content-type":
+                _user_headers_flags.ContentType = true;
+                break;
+            default:
+                break;
         }
-        else
-        if (icmp(h.FieldName, "useragent")==0)
-        {
-            _user_headers_flags.UserAgent = true;
-        }
-        else
-        if (icmp(h.FieldName, "accept-encoding")==0)
-        {
-            _user_headers_flags.AcceptEncoding = true;
-        }
-        _user_headers.insertBack(h);
+        _user_headers.put(field, h);
     }
     auto user_headers() @safe @nogc nothrow
     {
-        return _user_headers;
+        return _user_headers.byValue;
     }
     auto user_headers_flags() @safe @nogc nothrow
     {
