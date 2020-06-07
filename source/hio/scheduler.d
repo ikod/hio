@@ -19,6 +19,10 @@ import std.range;
 
 //static import core.sys.posix.unistd;
 
+private enum PAGESIZE = 4*1024;
+/// stack size for new tasks
+shared int TASK_STACK_SIZE = 16 * PAGESIZE;
+
 import hio.events;
 import hio.loop;
 import hio.common;
@@ -338,7 +342,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
         else
         {
             () @trusted {
-                _executor = new Fiber(&run);
+                _executor = new Fiber(&run, TASK_STACK_SIZE);
             }();
         }
         //super(&run);
