@@ -288,7 +288,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
 
     override bool connected() @safe
     {
-        return _ssl_connected;
+        return _ssl_connected && _so.connected;
     }
 
     override void bind(Address addr) @safe
@@ -537,7 +537,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
     {
         assert(iorq.callback !is null);
         assert(connected);
-        assert(_state == State.IDLE);
+        assert(_state == State.IDLE || _state == State.IO);
         _ioResult = IOResult();
         _ioResult.output = iorq.output;
         _to_receive = iorq.to_read;
