@@ -98,6 +98,7 @@ class AsyncHTTPClient
     {
         close();
     }
+
     void close() @safe
     {
         if ( _connection )
@@ -105,7 +106,14 @@ class AsyncHTTPClient
             _connection.close();
             _connection = null;
         }
+        // close everyting in pool
+        foreach (AsyncSocketLike s; _conn_pool.byValue())
+        {
+            s.close();
+        }
+        _conn_pool.clear();
     }
+
     private bool use_proxy() @safe
     {
         return false;
@@ -147,6 +155,11 @@ class AsyncHTTPClient
             _execute();
             return;
         }
+        // reset state
+        _state = State.INIT;
+        // return connection to pool
+        _conn_pool.put(ConnectionTriple(_current_url.schema, _current_url.host, _current_url.port), _connection);
+        _connection = null;
         _callback(r);
     }
     private void _http_handler_call(AsyncSocketLike c) @safe
@@ -249,7 +262,7 @@ class AsyncHTTPClient
 
         if ( !_request.user_headers_flags.AcceptEncoding )
         {
-            message_header.append("Accept-Encoding: gzip.deflate\n");
+            message_header.append("Accept-Encoding: gzip,deflate\n");
             if (_verbosity >= 1) writefln("-> %s: %s", "Accept-Encoding", "gzip,deflate");
         }
         if ( !_request.user_headers_flags.Host )
@@ -292,7 +305,7 @@ class AsyncHTTPClient
         return message_header;
     }
 
-    void _execute() @safe
+    private void _execute() @safe
     {
         import std.stdio;
         debug(hiohttp) writefln("pool: %s", _conn_pool);
@@ -310,6 +323,8 @@ class AsyncHTTPClient
             _state = State.CONNECTING;
             _connection = _conn_factory(_current_url);
         }
+
+        assert(_connection !is null);
 
         if ( _connection.connected )
         {
@@ -329,8 +344,20 @@ class AsyncHTTPClient
         }
         assert(0);
     }
+    public void verbosity(int v) @safe @property @nogc nothrow
+    {
+        _verbosity = v;
+    }
+    public void connect_timeout(Duration v) @safe @property @nogc nothrow
+    {
+        _connect_timeout = v;
+    }
+    public void addHeader(Header h) @safe
+    {
+        _request.addHeader(h);
+    }
 
-    void execute(Method method, URL url, void delegate(AsyncHTTPResult) @safe callback)
+    void execute(Method method, URL url, void delegate(AsyncHTTPResult) @safe callback) @safe
     {
         enforce(_state == State.INIT, "You can't reenter this");
         enforce(_connection is null, "You can't reenter this");
@@ -359,8 +386,8 @@ unittest
     
     assert(q == "GET /path HTTP/1.1\n".representation);
 
-    c._request.addHeader(Header("X-header", "x-value"));
-    c._request.addHeader(Header("Content-Length", "100"));
+    c.addHeader(Header("X-header", "x-value"));
+    c.addHeader(Header("Content-Length", "100"));
 
     Nbuff header = c._build_request_header();
     //writeln(cast(string)header.data.data);
@@ -726,6 +753,49 @@ struct AsyncHTTP
     }
 }
 
+class HTTPClient
+{
+    import core.thread: Fiber;
+    private
+    {
+        AsyncHTTPClient _async_client;
+    }
+    this()
+    {
+        _async_client = new AsyncHTTPClient();
+    }
+    AsyncHTTPResult execute(Method method, URL url)  @trusted
+    {
+        AsyncHTTPResult result;
+        Fiber f = Fiber.getThis();
+        assert(f !is null, "You can call this only inside from task/fiber");
+        void callback(AsyncHTTPResult r) @trusted
+        {
+            result = r;
+            f.call();
+        }
+        _async_client.execute(method, url, &callback);
+        Fiber.yield();
+        return result;
+    }
+}
+
+unittest
+{
+    import std.stdio;
+    import hio.scheduler;
+    import std.experimental.logger;
+    globalLogLevel = LogLevel.trace;
+    App({
+        info("Test httpclient in task");
+        HTTPClient c = new HTTPClient();
+        auto r = c.execute(Method("GET"), parse_url("https://httpbin.org/get"));
+        writefln("result: %s", r);
+        r = c.execute(Method("GET"), parse_url("https://httpbin.org/get"));
+        writefln("result: %s", r);
+    });
+}
+
 struct AsyncHTTPResult
 {
     int             status_code = -1;
@@ -803,7 +873,34 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/stream/100");
-        client._verbosity = 1;
+        client.verbosity = 1;
+        client.execute(Method("GET"), url, &callback);
+        hlSleep(25.seconds);
+    });
+    globalLogLevel = LogLevel.info;
+    App({
+        info("test conn reuse");
+        int requests = 3;
+        AsyncHTTPClient client = new AsyncHTTPClient();
+        URL url = parse_url("http://httpbin.org/get");
+        void callback(AsyncHTTPResult result) @safe
+        {
+            if ( result.status_code != 200 )
+            {
+                debug(hiohttp) tracef("status code = %d", result.status_code);
+            }
+            debug writefln("<%s>", cast(string)result.response_body.data.data);
+            if (--requests == 0)
+            {
+                client.close();
+                getDefaultLoop.stop();
+                return;
+            }
+            client.addHeader(Header("X-Request-No", "%d".format(requests)));
+            client.execute(Method("GET"), url, &callback);
+        }
+        client.verbosity = 1;
+        client.addHeader(Header("X-Request-No", "%d".format(requests)));
         client.execute(Method("GET"), url, &callback);
         hlSleep(25.seconds);
     });
@@ -819,7 +916,7 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/absolute-redirect/3");
-        client._verbosity = 1;
+        client.verbosity = 1;
         client.execute(Method("GET"), url, &callback);
         hlSleep(25.seconds);
     });
@@ -836,7 +933,7 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/absolute-redirect/3");
-        client._verbosity = 1;
+        client.verbosity = 1;
         client._max_redirects = 1;
         client.execute(Method("GET"), url, &callback);
         hlSleep(25.seconds);
@@ -853,7 +950,7 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://2.2.2.2/");
-        client._connect_timeout = 1.seconds;
+        client.connect_timeout = 1.seconds;
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });
@@ -870,9 +967,9 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/gzip");
-        client._connect_timeout = 1.seconds;
-        client._verbosity = 1;
-        client._request.addHeader(Header("Accept-Encoding","gzip"));
+        client.connect_timeout = 1.seconds;
+        client.verbosity = 1;
+        client.addHeader(Header("Accept-Encoding","gzip"));
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });
@@ -889,13 +986,13 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("http://httpbin.org/deflate");
-        client._connect_timeout = 1.seconds;
-        client._verbosity = 1;
-        client._request.addHeader(Header("Accept-Encoding","deflate"));
+        client.connect_timeout = 1.seconds;
+        client.verbosity = 0;
+        client.addHeader(Header("Accept-Encoding","deflate"));
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });
-    globalLogLevel = LogLevel.trace;
+    globalLogLevel = LogLevel.info;
     App({
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
@@ -908,9 +1005,9 @@ unittest
             getDefaultLoop.stop();
         }
         URL url = parse_url("https://httpbin.org/gzip");
-        client._connect_timeout = 1.seconds;
-        client._verbosity = 1;
-        client._request.addHeader(Header("Accept-Encoding","gzip"));
+        client.connect_timeout = 1.seconds;
+        client.verbosity = 0;
+        client.addHeader(Header("Accept-Encoding","gzip"));
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });
