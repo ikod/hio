@@ -1037,6 +1037,11 @@ class HioSocket
         _socket = new hlSocket(fileno, af, sock_type, f, l);
     }
 
+    this(hlSocket so)
+    {
+        _socket = so;
+    }
+
     ~this() {
         // if ( _socket ) {
         //     _socket.close();
@@ -1137,8 +1142,7 @@ class HioSocket
             _socket._polling &= ~AppEvent.IN;
         }
         _socket._state = hlSocket.State.IDLE;
-        _accept_socket = new HioSocket();
-        _accept_socket._socket = cast(hlSocket)so;
+        _accept_socket = new HioSocket(cast(hlSocket)so);
         _fiber.call();
     }
     auto accept(Duration timeout = Duration.max) {
