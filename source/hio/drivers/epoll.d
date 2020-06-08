@@ -63,9 +63,9 @@ struct NativeEventLoopImpl {
         if ( epoll_fd == -1 ) {
             epoll_fd = (() @trusted  => epoll_create(MAXEVENTS))();
         }
-        if ( timer_fd == -1 ) {
-            timer_fd = (() @trusted => timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK))();
-        }
+        // if ( timer_fd == -1 ) {
+        //     timer_fd = (() @trusted => timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK))();
+        // }
         //precise_timers = new RedBlackTree!Timer();
         fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
         GC.addRange(&fileHandlers[0], fileHandlers.length * FileEventHandler.sizeof);
