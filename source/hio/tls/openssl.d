@@ -91,7 +91,6 @@ package extern(C)
     char*       ERR_reason_error_string(ulong) @trusted nothrow;
     char*       ERR_error_string(ulong, char*) @trusted nothrow;
     ulong       ERR_get_error() @trusted nothrow;
-    long        SSL_ctrl(SSL*, int, long, void*) @trusted nothrow;
 }
 
 void init_ssl_library()
