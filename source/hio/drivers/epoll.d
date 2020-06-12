@@ -137,14 +137,14 @@ struct NativeEventLoopImpl {
          * which mean we wil run events once
         **/
         SysTime deadline = Clock.currTime + d;
-        debug tracef("evl run %s",runInfinitely? "infinitely": "for %s".format(d));
+        debug(hioepoll) tracef("evl run %s",runInfinitely? "infinitely": "for %s".format(d));
         scope ( exit )
         {
             stopped = false;
         }
 
         while( !stopped ) {
-            debug tracef("event loop iteration");
+            debug(hioepoll) tracef("event loop iteration");
 
             if (stopped) {
                 break;
@@ -156,7 +156,7 @@ struct NativeEventLoopImpl {
 
             int ready = epoll_wait(epoll_fd, &events[0], MAXEVENTS, timeout_ms);
 
-            debug tracef("got %d events", ready);
+            debug(hioepoll) tracef("got %d events", ready);
 
             SysTime now_real = Clock.currTime;
 
@@ -170,13 +170,13 @@ struct NativeEventLoopImpl {
             debug(hioepoll) tracef("events: %s", events[0..ready]);
             foreach(i; 0..ready) {
                 auto e = events[i];
-                debug tracef("got event %s", e);
+                debug(hioepoll) tracef("got event %s", e);
                 int fd = e.data.fd;
 
                 if ( fd == signal_fd ) {
                     enum siginfo_items = 8;
                     signalfd_siginfo[siginfo_items] info;
-                    debug trace("got signal");
+                    debug(hioepoll) trace("got signal");
                     assert(signal_fd != -1);
                     while (true) {
                         auto rc = read(signal_fd, &info, info.sizeof);
@@ -185,12 +185,12 @@ struct NativeEventLoopImpl {
                         }
                         enforce(rc > 0);
                         auto got_signals = rc / signalfd_siginfo.sizeof;
-                        debug tracef("read info %d, %s", got_signals, info[0..got_signals]);
+                        debug(hioepoll) tracef("read info %d, %s", got_signals, info[0..got_signals]);
                         foreach(si; 0..got_signals) {
                             auto signum = info[si].ssi_signo;
-                            debug tracef("signum: %d", signum);
+                            debug(hioepoll) tracef("signum: %d", signum);
                             foreach(s; signals[signum]) {
-                                debug tracef("processing signal handler %s", s);
+                                debug(hioepoll) tracef("processing signal handler %s", s);
                                 try {
                                     SigHandlerDelegate h = s._handler;
                                     h(signum);
@@ -215,7 +215,7 @@ struct NativeEventLoopImpl {
                 if (e.events & EPOLLHUP) {
                     ae |= AppEvent.HUP;
                 }
-                debug tracef("process event %02x on fd: %s, handler: %s", e.events, e.data.fd, fileHandlers[fd]);
+                debug(hioepoll) tracef("process event %02x on fd: %s, handler: %s", e.events, e.data.fd, fileHandlers[fd]);
                 if ( fileHandlers[fd] !is null ) {
                     try {
                         fileHandlers[fd].eventHandler(e.data.fd, ae);
@@ -291,11 +291,15 @@ struct NativeEventLoopImpl {
                 return;
             }
         }
-        timingwheels.cancel(t);
+        if (timingwheels.totalTimers() > 0)
+        {
+            // static destructors can try to stop timers after loop deinit
+            timingwheels.cancel(t);
+        }
     }
 
     // void start_precise_timer(Timer t) @safe {
-    //     debug tracef("insert timer %s", t);
+    //     debug(hioepoll) tracef("insert timer %s", t);
     //     if ( precise_timers.empty || t < precise_timers.front ) {
     //         auto d = t._expires - Clock.currTime;
     //         d = max(d, 0.seconds);
@@ -303,7 +307,7 @@ struct NativeEventLoopImpl {
     //             overdue ~= t;
     //             return;
     //         }
-    //         debug {
+    //         debug(hioepoll) {
     //             tracef("timers: %s", precise_timers);
     //         }
     //         if ( precise_timers.empty ) {
@@ -316,33 +320,33 @@ struct NativeEventLoopImpl {
     // }
 
     // void stop_precise_timer(Timer t) @safe {
-    //     debug tracef("remove timer %s", t);
+    //     debug(hioepoll) tracef("remove timer %s", t);
 
     //     if ( t !is precise_timers.front ) {
-    //         debug tracef("Non front timer: %s", precise_timers);
+    //         debug(hioepoll) tracef("Non front timer: %s", precise_timers);
     //         auto r = precise_timers.equalRange(t);
     //         precise_timers.remove(r);
     //         return;
     //     }
 
     //     precise_timers.removeFront();
-    //     debug trace("we have to del this timer from kernel or set to next");
+    //     debug(hioepoll) trace("we have to del this timer from kernel or set to next");
     //     if ( !precise_timers.empty ) {
     //         // we can change kernel timer to next,
     //         // If next timer expired - set delta = 0 to run on next loop invocation
-    //         debug trace("set up next timer");
+    //         debug(hioepoll) trace("set up next timer");
     //         auto next = precise_timers.front;
     //         auto d = next._expires - Clock.currTime;
     //         d = max(d, 0.seconds);
     //         _mod_kernel_timer(precise_timers.front, d);
     //         return;
     //     }
-    //     debug trace("remove last timer");
+    //     debug(hioepoll) trace("remove last timer");
     //     _del_kernel_timer();
     // }
 
     // void _add_kernel_timer(Timer t, in Duration d) @trusted {
-    //     debug trace("add kernel timer");
+    //     debug(hioepoll) trace("add kernel timer");
     //     assert(d > 0.seconds);
     //     itimerspec itimer;
     //     auto ds = d.split!("seconds", "nsecs");
@@ -357,7 +361,7 @@ struct NativeEventLoopImpl {
     //     enforce(rc >= 0, "epoll_ctl add(%s): %s".format(e, fromStringz(strerror(errno))));
     // }
     // void _mod_kernel_timer(Timer t, in Duration d) @trusted {
-    //     debug tracef("mod kernel timer to %s", t);
+    //     debug(hioepoll) tracef("mod kernel timer to %s", t);
     //     assert(d >= 0.seconds, "Illegal timer %s".format(d));
     //     itimerspec itimer;
     //     auto ds = d.split!("seconds", "nsecs");
@@ -372,7 +376,7 @@ struct NativeEventLoopImpl {
     //     enforce(rc >= 0);
     // }
     // void _del_kernel_timer() @trusted {
-    //     debug trace("del kernel timer");
+    //     debug(hioepoll) trace("del kernel timer");
     //     epoll_event e;
     //     e.events = EPOLLIN;
     //     e.data.fd = timer_fd;
@@ -387,12 +391,12 @@ struct NativeEventLoopImpl {
     //     ue.handler(broadcast);
     // }
     // void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
-    //     debug trace("posting notification");
+    //     debug(hioepoll) trace("posting notification");
     //     if ( !notificationsQueue.full )
     //     {
-    //         debug trace("put notification");
+    //         debug(hioepoll) trace("put notification");
     //         notificationsQueue.put(NotificationDelivery(notification, broadcast));
-    //         debug trace("put notification done");
+    //         debug(hioepoll) trace("put notification done");
     //         return;
     //     }
     //     // now try to find space for next notification
@@ -407,12 +411,12 @@ struct NativeEventLoopImpl {
     //     }
     //     enforce(!notificationsQueue.full, "Can't clear space for next notification in notificatioinsQueue");
     //     notificationsQueue.put(NotificationDelivery(notification, broadcast));
-    //     debug trace("posting notification - done");
+    //     debug(hioepoll) trace("posting notification - done");
     // }
 
 
     //void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
-    //    debug trace("posting notification");
+    //    debug(hioepoll) trace("posting notification");
     //    if ( !notificationsQueue.full )
     //    {
     //        notificationsQueue.put(NotificationDelivery(notification, broadcast));
@@ -436,8 +440,8 @@ struct NativeEventLoopImpl {
     // signals
     //
     void start_signal(Signal s) {
-        debug tracef("start signal %s", s);
-        debug tracef("signals: %s", signals);
+        debug(hioepoll) tracef("start signal %s", s);
+        debug(hioepoll) tracef("signals: %s", signals);
         auto r = s._signum in signals;
         if ( r is null || r.length == 0 ) {
             // enable signal only through kevent
@@ -446,7 +450,7 @@ struct NativeEventLoopImpl {
         signals[s._signum] ~= s;
     }
     void stop_signal(Signal s) {
-        debug trace("stop signal");
+        debug(hioepoll) trace("stop signal");
         auto r = s._signum in signals;
         if ( r is null ) {
             throw new NotFoundException("You tried to stop signal that was not started");
@@ -465,10 +469,10 @@ struct NativeEventLoopImpl {
         } else {
             *r = new_row;
         }
-        debug tracef("new signals %d row %s", s._signum, new_row);
+        debug(hioepoll) tracef("new signals %d row %s", s._signum, new_row);
     }
     void _add_kernel_signal(Signal s) {
-        debug tracef("add kernel signal %d, id: %d", s._signum, s._id);
+        debug(hioepoll) tracef("add kernel signal %d, id: %d", s._signum, s._id);
         sigset_t m;
         sigemptyset(&m);
         sigaddset(&m, s._signum);
@@ -477,7 +481,7 @@ struct NativeEventLoopImpl {
         sigaddset(&mask, s._signum);
         if ( signal_fd == -1 ) {
             signal_fd = signalfd(-1, &mask, SFD_NONBLOCK|SFD_CLOEXEC);
-            debug tracef("signalfd %d", signal_fd);
+            debug(hioepoll) tracef("signalfd %d", signal_fd);
             epoll_event e;
             e.events = EPOLLIN|EPOLLET;
             e.data.fd = signal_fd;
@@ -489,7 +493,7 @@ struct NativeEventLoopImpl {
 
     }
     void _del_kernel_signal(Signal s) {
-        debug tracef("del kernel signal %d, id: %d", s._signum, s._id);
+        debug(hioepoll) tracef("del kernel signal %d, id: %d", s._signum, s._id);
         sigset_t m;
         sigemptyset(&m);
         sigaddset(&m, s._signum);
@@ -522,7 +526,7 @@ struct NativeEventLoopImpl {
     // files/sockets
     //
     void detach(int fd) @safe {
-        debug tracef("detaching fd(%d) from fileHandlers[%d]", fd, fileHandlers.length);
+        debug(hioepoll) tracef("detaching fd(%d) from fileHandlers[%d]", fd, fileHandlers.length);
         fileHandlers[fd] = null;
     }
     void start_poll(int fd, AppEvent ev, FileEventHandler f) @trusted {
