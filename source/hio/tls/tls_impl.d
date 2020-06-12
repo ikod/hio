@@ -651,7 +651,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
 
 unittest
 {
-    globalLogLevel = LogLevel.trace;
+    globalLogLevel = LogLevel.info;
     App({
         void connected(AppEvent ev)
         {
