@@ -267,7 +267,7 @@ struct NativeEventLoopImpl {
         auto now = Clock.currTime;
         auto d = t._expires - now;
         d = max(d, 0.seconds);
-        if ( d == 0.seconds ) {
+        if ( d <= tick ) {
             overdue ~= t;
             return;
         }
