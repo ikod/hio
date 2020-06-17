@@ -300,7 +300,7 @@ struct NativeEventLoopImpl {
         auto now = Clock.currTime;
         auto d = t._expires - now;
         d = max(d, 0.seconds);
-        if ( d <= tick ) {
+        if ( d < tick ) {
             overdue ~= t;
             return;
         }
@@ -326,7 +326,11 @@ struct NativeEventLoopImpl {
 
     void stop_timer(Timer t) @safe {
         debug(hiokqueue) safe_tracef("remove timer %s", t);
-        timingwheels.cancel(t);
+        if (timingwheels.totalTimers() > 0)
+        {
+            // static destructors can try to stop timers after loop deinit
+            timingwheels.cancel(t);
+        }
     }
 
     void flush() @trusted {
