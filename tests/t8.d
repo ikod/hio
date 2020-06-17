@@ -9,6 +9,8 @@
     debugVersions "hiossl"
 +/
 
+// test ssl connection
+
 module tests.t8;
 
 import std.experimental.logger;

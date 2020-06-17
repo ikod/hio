@@ -78,3 +78,25 @@ Running 45s test @ http://localhost:12345/
  99.999%    3.38ms
 100.000%    3.82ms
 
+---
+Wed Jun 17 23:22:37 EEST 2020
+t4
+Running 30s test @ http://localhost:12345/
+  4 threads and 200 connections
+  Thread calibration: mean lat.: 1.005ms, rate sampling interval: 10ms
+  Thread calibration: mean lat.: 1.050ms, rate sampling interval: 10ms
+  Thread calibration: mean lat.: 1.073ms, rate sampling interval: 10ms
+  Thread calibration: mean lat.: 1.058ms, rate sampling interval: 10ms
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     0.96ms  438.35us   2.50ms   65.22%
+    Req/Sec   524.07    233.07     1.33k    63.55%
+  Latency Distribution (HdrHistogram - Recorded Latency)
+ 50.000%    0.94ms
+ 75.000%    1.27ms
+ 90.000%    1.55ms
+ 99.000%    1.95ms
+ 99.900%    2.14ms
+ 99.990%    2.27ms
+ 99.999%    2.50ms
+100.000%    2.50ms
+

@@ -26,17 +26,6 @@ shared int ops;
 
 enum BufferSize = 4*1024;
 
-void client()
-{
-    while(true)
-    {
-        auto s = new HioSocket();
-        s.connect("127.0.0.1:12345", 1.seconds);
-        s.send("hello".representation, 1.seconds);
-        s.close();
-    }
-}
-
 void handler(HioSocket s)
 {
     scope(exit)
