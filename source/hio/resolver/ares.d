@@ -88,7 +88,7 @@ extern(C)
 {
     alias    ares_host_callback = void function(void *arg, int status, int timeouts, hostent *he);
     alias    ares_callback =      void function(void *arg, int status, int timeouts, ubyte *abuf, int alen);
-    int      ares_init(ares_channel*);
+    int      ares_init(ares_channel*) @trusted;
     void     ares_destroy(ares_channel);
     timeval* ares_timeout(ares_channel channel, timeval *maxtv, timeval *tv);
     char*    ares_strerror(int);
@@ -125,24 +125,45 @@ shared static ~this()
 {
     ares_library_cleanup();
 }
+///
+// lazy singleton per thread
+// allocated on first call to any of hio_gethostbyname*
+// when variant with callback used - default event loop drives socket non-blocking ops
+///
+package static Resolver theResolver;
 
-static Resolver theResolver;
-static this() {
-    theResolver = new Resolver();
-}
 static ~this()
 {
     if (theResolver)
     {
+        if (theResolver._cacheCleaner)
+        {
+            // can't call stopTimer from dtor (no nogc)
+            getDefaultLoop().stopTimer(theResolver._cacheCleaner);
+            theResolver._cacheCleaner = null;
+        }
         theResolver.close();
+        theResolver = null;
     }
 }
-public auto hio_gethostbyname(string host, ushort port=InternetAddress.PORT_ANY)
+
+/// gethostbyname IPv4 "blocking" variant
+public ResolverResult4 hio_gethostbyname(string host, ushort port=InternetAddress.PORT_ANY)
 {
-    return theResolver.gethostbyname(host, port);
+    if ( theResolver is null)
+    {
+        theResolver = new Resolver();
+        theResolver._loop = getDefaultLoop();
+    }
+    return gethostbyname(host, port);
 }
-public auto hio_gethostbyname(F)(string host, F callback, ushort port=InternetAddress.PORT_ANY, hlEvLoop loop = null) if (isCallable!F)
+/// gethostbyname IPv4 "non-blocking" variant
+public void hio_gethostbyname(F)(string host, F callback, ushort port=InternetAddress.PORT_ANY) if (isCallable!F)
 {
+    if ( theResolver is null)
+    {
+        theResolver = new Resolver();
+    }
     void cb(int s, uint[] a) @safe
     {
         InternetAddress[] addresses;
@@ -151,17 +172,461 @@ public auto hio_gethostbyname(F)(string host, F callback, ushort port=InternetAd
         }
         callback(s, addresses);
     }
-    if ( loop is null )
+    if ( theResolver._loop is null )
     {
-        loop = getDefaultLoop();
+        theResolver._loop = getDefaultLoop();
     }
-    theResolver.gethostbyname(host, loop, &cb);
+    gethostbyname(host, &cb);
 }
 
-public auto hio_gethostbyname6(string host, ushort port=Internet6Address.PORT_ANY)
+/// gethostbyname IPv6 "blocking" variant
+public ResolverResult6 hio_gethostbyname6(string host, ushort port=Internet6Address.PORT_ANY)
 {
-    return theResolver.gethostbyname6(host, port);
+    if ( theResolver is null)
+    {
+        theResolver = new Resolver();
+        theResolver._loop = getDefaultLoop();
+    }
+    return gethostbyname6(host, port);
 }
+
+/// gethostbyname IPv6 "non-blocking" variant
+public void hio_gethostbyname6(F)(string host, F callback, ushort port=InternetAddress.PORT_ANY) if (isCallable!F)
+{
+    if ( theResolver is null)
+    {
+        theResolver = new Resolver();
+    }
+    void cb(int s, uint[] a) @safe
+    {
+        InternetAddress6[] addresses;
+        foreach (ia; a) {
+            addresses ~= new InternetAddress6(ia, port);
+        }
+        callback(s, addresses);
+    }
+    if ( theResolver._loop is null )
+    {
+        theResolver._loop = getDefaultLoop();
+    }
+    theResolver.gethostbyname6(host, &cb);
+}
+
+package ResolverResult4 gethostbyname(string hostname, ushort port=InternetAddress.PORT_ANY)
+in(theResolver !is null)
+{
+    int                 status, id;
+    InternetAddress[]   addresses;
+    bool                done;
+    auto                now = Clock.currStdTime;
+    DNSCacheEntry       dnsInfo;
+
+    // try to convert string to addr
+    int addr;
+    int p = inet_pton(AF_INET, toStringz(hostname), &addr);
+    if (p > 0)
+    {
+        debug(hioresolve) tracef("address converetd from %s", hostname, p);
+        return ResolverResult4(ARES_SUCCESS, [new InternetAddress(ntohl(addr), port)]);
+    }
+    // lookup in cache
+    auto f = theResolver._cache.fetch(hostname);
+    if ( f.ok && (now - f.value._timestamp < f.value._ttl) )
+    {
+        debug(hioresolve) tracef("return cached resolve for \"%s\" with status %s", hostname, ares_statusString(f.value._status));
+        foreach(ia; f.value._addresses)
+        {
+            addresses ~= new InternetAddress(ia, port);
+        }
+        return ResolverResult4(f.value._status, addresses);
+    }
+    // resolve from /etc/hosts
+    dnsInfo = theResolver.resolve4FromFile(hostname);
+    if (dnsInfo._status == ARES_SUCCESS)
+    {
+        debug(hioresolve) tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
+        foreach(ia; dnsInfo._addresses)
+        {
+            addresses ~= new InternetAddress(ia, port);
+        }
+        theResolver._cache.put(hostname, dnsInfo);
+        return ResolverResult4(ARES_SUCCESS, addresses);
+    }
+
+    debug(hioresolve) tracef("start resolving %s", hostname);
+    //
+    id = ++theResolver._id;
+    auto fiber = Fiber.getThis();
+    if (fiber is null)
+    {
+        void cba(int s, uint[] a)
+        {
+            status = s;
+            foreach(ia; a)
+            {
+                addresses ~= new InternetAddress(ia, port);
+            }
+            done = true;
+            theResolver._cb4d.remove(id);
+            debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
+        }
+        theResolver._cb4d[id] = Callback4InfoD(hostname, &cba);
+        ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_a, theResolver.ares_callback4, cast(void*)id);
+        if ( done )
+        {
+            // resolved from files
+            debug(hioresolve) tracef("return ready result");
+            return ResolverResult(status, addresses);
+        }
+        // called without loop/callback, we can and have to block
+        int nfds, count;
+        fd_set readers, writers;
+        timeval tv;
+        timeval *tvp;
+
+        while (!done) {
+            FD_ZERO(&readers);
+            FD_ZERO(&writers);
+            nfds = ares_fds(theResolver._ares_channel, &readers, &writers);
+            if (nfds == 0)
+                break;
+            tvp = ares_timeout(theResolver._ares_channel, null, &tv);
+            count = select(nfds, &readers, &writers, null, tvp);
+            ares_process(theResolver._ares_channel, &readers, &writers);
+        }
+        return ResolverResult(status, addresses);
+    }
+    else
+    {
+        assert(theResolver._loop !is null, "Improper call, probably you have to use hio_gethostbyname variant");
+        bool yielded;
+        void cbb(int s, uint[] a)
+        {
+            status = s;
+            foreach (ia; a) {
+                addresses ~= new InternetAddress(ia, port);
+            }
+            done = true;
+            theResolver._cb4d.remove(id);
+            debug(hioresolve) tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
+            if (yielded) fiber.call();
+        }
+        // handleLockedFibers call callbacks for concurrent resolves
+        // when first resolution completes
+        void handleLockedFibers()
+        {
+            if ( theResolver._lockingEnabled )
+            {
+                auto inActiveResolving = theResolver._activeResolves4d.fetch(hostname);
+                assert(inActiveResolving.ok);
+                foreach (cb; inActiveResolving.value)
+                {
+                    debug(hioresolve) tracef("wakeup resolving waitor");
+                    cb(status, addresses.map!"a.addr".array);
+                }
+                theResolver._activeResolves4d.remove(hostname);
+            }
+        }
+
+        // if locking enabled we can put current fiber on hold in case
+        // resolving for `hostname` already started. It will be called when
+        // firts resoluthion completes
+        if ( theResolver._lockingEnabled )
+        {
+            auto inActiveResolving = theResolver._activeResolves4d.fetch(hostname);
+            if ( !inActiveResolving.ok )
+            {
+                // first enter
+                theResolver._activeResolves4d.put(hostname, new ResolverCallbackDelegate[](0));
+            }
+            else
+            {
+                // some follower, add to list of waitors
+                debug(hioresolve) tracef("have to lock on resolving");
+                auto waitors = inActiveResolving.value;
+                waitors ~= &cbb;
+                theResolver._activeResolves4d.put(hostname, waitors);
+                yielded = true;
+                Fiber.yield();
+                return ResolverResult(status, addresses);
+            }
+        }
+        // call ares
+        theResolver._cb4d[id] = Callback4InfoD(hostname, &cbb);
+        ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_a, theResolver.ares_callback4, cast(void*)id);
+        if ( done )
+        {
+            // resolved from files
+            debug(hioresolve) tracef("return ready result");
+            handleLockedFibers();
+            return ResolverResult(status, addresses);
+        }
+        auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+        // prepare listening for socket events
+        theResolver.handleGetSocks(rc, &theResolver._sockets);
+        yielded = true;
+        Fiber.yield();
+        handleLockedFibers();
+        return ResolverResult(status, addresses);
+    }
+}
+
+package ResolverResult6 gethostbyname6(string hostname, ushort port=InternetAddress.PORT_ANY)
+in(theResolver !is null)
+{
+    int                 status, id;
+    Internet6Address[]  addresses;
+    bool                done;
+    auto                now = Clock.currStdTime;
+    DNS6CacheEntry      dnsInfo;
+
+    // try to convert string to addr
+    ubyte[16] addr;
+    int p = inet_pton(AF_INET6, toStringz(hostname), addr.ptr);
+    if (p > 0)
+    {
+        debug(hioresolve) tracef("address converetd from %s", hostname, p);
+        return ResolverResult6(ARES_SUCCESS, [new Internet6Address(addr, port)]);
+    }
+
+    auto f = theResolver._cache6.fetch(hostname);
+    if ( f.ok && (now - f.value._timestamp < f.value._ttl) )
+    {
+        debug(hioresolve) tracef("return cached resolve status '%s' for \"%s\"", ares_statusString(f.value._status), hostname);
+        foreach(ia; f.value._addresses)
+        {
+            addresses ~= new Internet6Address(ia, port);
+        }
+        return ResolverResult6(f.value._status, addresses);
+    }
+
+    dnsInfo = theResolver.resolve6FromFile(hostname);
+    if (dnsInfo._status == ARES_SUCCESS)
+    {
+        debug(hioresolve) tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
+        foreach(ia; dnsInfo._addresses)
+        {
+            addresses ~= new Internet6Address(ia, port);
+        }
+        theResolver._cache6.put(hostname, dnsInfo);
+        return ResolverResult6(ARES_SUCCESS, addresses);
+    }
+
+    debug(hioresolve) tracef("start resolving %s", hostname);
+    //
+    id = ++theResolver._id;
+    auto fiber = Fiber.getThis();
+    if (fiber is null)
+    {
+        void cba(int s, ubyte[16][] a)
+        {
+            status = s;
+            foreach(ia; a)
+            {
+                addresses ~= new Internet6Address(ia, port);
+            }
+            done = true;
+            theResolver._cb6d.remove(id);
+            debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
+        }
+        theResolver._cb6d[id] = Callback6InfoD(hostname, &cba);
+        ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, theResolver.ares_callback6, cast(void*)id);
+        if ( done )
+        {
+            // resolved from files
+            debug(hioresolve) tracef("return ready result");
+            return ResolverResult6(status, addresses);
+        }
+        // called without loop/callback, we can and have to block
+        int nfds, count;
+        fd_set readers, writers;
+        timeval tv;
+        timeval *tvp;
+
+        while (!done) {
+            FD_ZERO(&readers);
+            FD_ZERO(&writers);
+            nfds = ares_fds(theResolver._ares_channel, &readers, &writers);
+            if (nfds == 0)
+                break;
+            tvp = ares_timeout(theResolver._ares_channel, null, &tv);
+            count = select(nfds, &readers, &writers, null, tvp);
+            ares_process(theResolver._ares_channel, &readers, &writers);
+        }
+        debug(hioresolve) tracef("return received result");
+        return ResolverResult6(status, addresses);
+    }
+    else
+    {
+        assert(theResolver._loop !is null, "Improper call, probably you have to use hio_gethostbyname6 variant");
+        bool yielded;
+        void cbb(int s, ubyte[16][] a)
+        {
+            status = s;
+            foreach (ia; a) {
+                addresses ~= new Internet6Address(ia, port);
+            }
+            done = true;
+            theResolver._cb6d.remove(id);
+            debug(hioresolve) tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
+            if (yielded) fiber.call();
+        }
+        // handleLockedFibers call callbacks for concurrent resolves
+        // when first resolution completes
+        void handleLockedFibers()
+        {
+            if ( theResolver._lockingEnabled )
+            {
+                auto inActiveResolving = theResolver._activeResolves6d.fetch(hostname);
+                assert(inActiveResolving.ok);
+                foreach (cb; inActiveResolving.value)
+                {
+                    debug(hioresolve) tracef("wakeup resolving waitor");
+                    cb(status, addresses.map!"a.addr".array);
+                }
+                theResolver._activeResolves6d.remove(hostname);
+            }
+        }
+        // if locking enabled we can put current fiber on hold in case
+        // resolving for `hostname` already started. It will be called when
+        // firts resoluthion completes
+        if ( theResolver._lockingEnabled )
+        {
+            auto inActiveResolving = theResolver._activeResolves6d.fetch(hostname);
+            if ( !inActiveResolving.ok )
+            {
+                // first enter
+                theResolver._activeResolves6d.put(hostname, new ResolverCallbackDelegate6[](0));
+            }
+            else
+            {
+                // some follower, add to list of waitors
+                debug(hioresolve) tracef("have to lock on resolving");
+                auto waitors = inActiveResolving.value;
+                waitors ~= &cbb;
+                theResolver._activeResolves6d.put(hostname, waitors);
+                yielded = true;
+                Fiber.yield();
+                return ResolverResult6(status, addresses);
+            }
+        }
+        theResolver._cb6d[id] = Callback6InfoD(hostname, &cbb);
+        ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, theResolver.ares_callback6, cast(void*)id);
+        if ( done )
+        {
+            // resolved from files
+            debug(hioresolve) tracef("return ready result");
+            handleLockedFibers();
+            return ResolverResult6(status, addresses);
+        }
+        auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+        // prepare listening for socket events
+        theResolver.handleGetSocks(rc, &theResolver._sockets);
+        yielded = true;
+        Fiber.yield();
+        handleLockedFibers();
+        return ResolverResult6(status, addresses);
+    }
+}
+
+///
+/// increment request id,
+/// register callbacks in resolver,
+/// start listening on sockets.
+///
+package auto gethostbyname(F)(string hostname, F cb) @safe if (isCallable!F)
+in(theResolver !is null)
+in(theResolver._loop !is null)
+{
+    debug(hioresolve) tracef("resolving %s", hostname);
+    int addr;
+    int p = () @trusted {return inet_pton(AF_INET, toStringz(hostname), &addr);}();
+    if (p > 0)
+    {
+        debug(hioresolve) tracef("address converetd from %s", hostname, p);
+        cb(ARES_SUCCESS, [ntohl(addr)]);
+        return;
+    }
+    DNSCacheEntry dnsInfo;
+    immutable now = Clock.currStdTime;
+    auto f = theResolver._cache.fetch(hostname);
+    if ( f.ok && ( now - f.value._timestamp < f.value._ttl))
+    {
+        cb(f.value._status, f.value._addresses);
+        return;
+    }
+    // try to resolve from files
+    dnsInfo = theResolver.resolve4FromFile(hostname);
+    if ( dnsInfo._status == ARES_SUCCESS)
+    {
+        theResolver._cache.put(hostname, dnsInfo);
+        debug(hioresolve) tracef("return dns from file for \"%s\"", hostname);
+        cb(dnsInfo._status, dnsInfo._addresses);
+        return;
+    }
+
+    auto id = ++theResolver._id;
+    static if (isDelegate!F)
+    {
+        theResolver._cb4d[id] = Callback4InfoD(hostname, cb);
+    }
+    else
+    {
+        _cb4f[id] = Callback4InfoF(hostname, cb);
+    }
+    // request for A records
+    () @trusted {
+        ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_a, theResolver.ares_callback4, cast(void*)id);
+    }();
+    auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
+    debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+    // prepare listening for socket events
+    theResolver.handleGetSocks(rc, &theResolver._sockets);
+}
+package auto gethostbyname6(F)(string hostname, F cb) @safe if (isCallable!F)
+in(theResolver !is null)
+in(theResolver._loop !is null)
+{
+    DNS6CacheEntry dnsInfo;
+    auto now = Clock.currStdTime;
+    auto f = theResolver._cache6.fetch(hostname);
+    if ( f.ok && ( now - f.value._timestamp < f.value._ttl) )
+    {
+        cb(f.value._status, f.value._addresses);
+        return;
+    }
+    // try to resolve from files
+    dnsInfo = theResolver.resolve6FromFile(hostname);
+    if ( dnsInfo._status == ARES_SUCCESS )
+    {
+        theResolver._cache6.put(hostname, dnsInfo);
+        debug(hioresolve) tracef("return dns from file for \"%s\"", hostname);
+        cb(dnsInfo._status, dnsInfo._addresses);
+        return;
+    }
+
+    auto id = ++theResolver._id;
+    static if (isDelegate!F)
+    {
+        theResolver._cb6d[id] = Callback6InfoD(hostname, cb);
+    }
+    else
+    {
+        theResolver._cb6f[id] = Callback6InfoF(hostname, cb);
+    }
+    // request for A records
+    ()@trusted {
+        ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, theResolver.ares_callback6, cast(void*)id);
+    }();
+    auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
+    debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+    // prepare listening for socket events
+    theResolver.handleGetSocks(rc, &theResolver._sockets);
+}
+
+
 ///
 auto ares_statusString(int status) @trusted
 {
@@ -246,7 +711,7 @@ package class Resolver: FileEventHandler
 
 
     enum CleanupFrequency = 15.seconds;
-    this()
+    this() @safe
     {
         immutable init_res = ares_init(&_ares_channel);
         assert(init_res == ARES_SUCCESS, "Can't initialise ares.");
@@ -297,328 +762,6 @@ package class Resolver: FileEventHandler
         assert(_activeResolves6d.length == 0);
     }
 
-    ResolverResult4 gethostbyname(string hostname, ushort port=InternetAddress.PORT_ANY)
-    {
-        int                 status, id;
-        InternetAddress[]   addresses;
-        bool                done;
-        auto                now = Clock.currStdTime;
-        DNSCacheEntry       dnsInfo;
-
-        // try to convert string to addr
-        int addr;
-        int p = inet_pton(AF_INET, toStringz(hostname), &addr);
-        if (p > 0)
-        {
-            debug(hioresolve) tracef("address converetd from %s", hostname, p);
-            return ResolverResult4(ARES_SUCCESS, [new InternetAddress(ntohl(addr), port)]);
-        }
-        // lookup in cache
-        auto f = _cache.fetch(hostname);
-        if ( f.ok && (now - f.value._timestamp < f.value._ttl) )
-        {
-            debug(hioresolve) tracef("return cached resolve for \"%s\" with status %s", hostname, ares_statusString(f.value._status));
-            foreach(ia; f.value._addresses)
-            {
-                addresses ~= new InternetAddress(ia, port);
-            }
-            return ResolverResult4(f.value._status, addresses);
-        }
-        // resolve from /etc/hosts
-        dnsInfo = resolve4FromFile(hostname);
-        if (dnsInfo._status == ARES_SUCCESS)
-        {
-            debug(hioresolve) tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
-            foreach(ia; dnsInfo._addresses)
-            {
-                addresses ~= new InternetAddress(ia, port);
-            }
-            _cache.put(hostname, dnsInfo);
-            return ResolverResult4(ARES_SUCCESS, addresses);
-        }
-
-        debug(hioresolve) tracef("start resolving %s", hostname);
-        //
-        id = ++_id;
-        auto fiber = Fiber.getThis();
-        if (fiber is null)
-        {
-            void cba(int s, uint[] a)
-            {
-                status = s;
-                foreach(ia; a)
-                {
-                    addresses ~= new InternetAddress(ia, port);
-                }
-                done = true;
-                _cb4d.remove(id);
-                debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
-            }
-            _cb4d[id] = Callback4InfoD(hostname, &cba);
-            ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_a, ares_callback4, cast(void*)id);
-            if ( done )
-            {
-                // resolved from files
-                debug(hioresolve) tracef("return ready result");
-                return ResolverResult(status, addresses);
-            }
-            // called without loop/callback, we can and have to block
-            int nfds, count;
-            fd_set readers, writers;
-            timeval tv;
-            timeval *tvp;
-
-            while (!done) {
-                FD_ZERO(&readers);
-                FD_ZERO(&writers);
-                nfds = ares_fds(_ares_channel, &readers, &writers);
-                if (nfds == 0)
-                    break;
-                tvp = ares_timeout(_ares_channel, null, &tv);
-                count = select(nfds, &readers, &writers, null, tvp);
-                ares_process(_ares_channel, &readers, &writers);
-            }
-            return ResolverResult(status, addresses);
-        }
-        else
-        {
-            bool yielded;
-            void cbb(int s, uint[] a)
-            {
-                status = s;
-                foreach (ia; a) {
-                    addresses ~= new InternetAddress(ia, port);
-                }
-                done = true;
-                _cb4d.remove(id);
-                debug(hioresolve) tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
-                if (yielded) fiber.call();
-            }
-            // handleLockedFibers call callbacks for concurrent resolves
-            // when first resolution completes
-            void handleLockedFibers()
-            {
-                if ( _lockingEnabled )
-                {
-                    auto inActiveResolving = _activeResolves4d.fetch(hostname);
-                    assert(inActiveResolving.ok);
-                    foreach (cb; inActiveResolving.value)
-                    {
-                        debug(hioresolve) tracef("wakeup resolving waitor");
-                        cb(status, addresses.map!"a.addr".array);
-                    }
-                    _activeResolves4d.remove(hostname);
-                }
-            }
-            if (!_loop)
-            {
-                _loop = getDefaultLoop();
-            }
-
-            // if locking enabled we can put current fiber on hold in case
-            // resolving for `hostname` already started. It will be called when
-            // firts resoluthion completes
-            if ( _lockingEnabled )
-            {
-                auto inActiveResolving = _activeResolves4d.fetch(hostname);
-                if ( !inActiveResolving.ok )
-                {
-                    // first enter
-                    _activeResolves4d.put(hostname, new ResolverCallbackDelegate[](0));
-                }
-                else
-                {
-                    // some follower, add to list of waitors
-                    debug(hioresolve) tracef("have to lock on resolving");
-                    auto waitors = inActiveResolving.value;
-                    waitors ~= &cbb;
-                    _activeResolves4d.put(hostname, waitors);
-                    yielded = true;
-                    Fiber.yield();
-                    return ResolverResult(status, addresses);
-                }
-            }
-            // call ares
-            _cb4d[id] = Callback4InfoD(hostname, &cbb);
-            ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_a, ares_callback4, cast(void*)id);
-            if ( done )
-            {
-                // resolved from files
-                debug(hioresolve) tracef("return ready result");
-                handleLockedFibers();
-                return ResolverResult(status, addresses);
-            }
-            auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-            debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
-            // prepare listening for socket events
-            handleGetSocks(rc, &_sockets);
-            yielded = true;
-            Fiber.yield();
-            handleLockedFibers();
-            return ResolverResult(status, addresses);
-        }
-    }
-    ResolverResult6 gethostbyname6(string hostname, ushort port=InternetAddress.PORT_ANY)
-    {
-        int                 status, id;
-        Internet6Address[]  addresses;
-        bool                done;
-        auto                now = Clock.currStdTime;
-        DNS6CacheEntry      dnsInfo;
-
-        // try to convert string to addr
-        ubyte[16] addr;
-        int p = inet_pton(AF_INET6, toStringz(hostname), addr.ptr);
-        if (p > 0)
-        {
-            debug(hioresolve) tracef("address converetd from %s", hostname, p);
-            return ResolverResult6(ARES_SUCCESS, [new Internet6Address(addr, port)]);
-        }
-
-        auto f = _cache6.fetch(hostname);
-        if ( f.ok && (now - f.value._timestamp < f.value._ttl) )
-        {
-            debug(hioresolve) tracef("return cached resolve status '%s' for \"%s\"", ares_statusString(f.value._status), hostname);
-            foreach(ia; f.value._addresses)
-            {
-                addresses ~= new Internet6Address(ia, port);
-            }
-            return ResolverResult6(f.value._status, addresses);
-        }
-
-        dnsInfo = resolve6FromFile(hostname);
-        if (dnsInfo._status == ARES_SUCCESS)
-        {
-            debug(hioresolve) tracef("return resolved from file for \"%s\" with status %s", hostname, ares_statusString(dnsInfo._status));
-            foreach(ia; dnsInfo._addresses)
-            {
-                addresses ~= new Internet6Address(ia, port);
-            }
-            _cache6.put(hostname, dnsInfo);
-            return ResolverResult6(ARES_SUCCESS, addresses);
-        }
-
-        debug(hioresolve) tracef("start resolving %s", hostname);
-        //
-        id = ++_id;
-        auto fiber = Fiber.getThis();
-        if (fiber is null)
-        {
-            void cba(int s, ubyte[16][] a)
-            {
-                status = s;
-                foreach(ia; a)
-                {
-                    addresses ~= new Internet6Address(ia, port);
-                }
-                done = true;
-                _cb6d.remove(id);
-                debug(hioresolve) tracef("resolve for %s: %s, %s", hostname, ares_statusString(s), a);
-            }
-            _cb6d[id] = Callback6InfoD(hostname, &cba);
-            ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, ares_callback6, cast(void*)id);
-            if ( done )
-            {
-                // resolved from files
-                debug(hioresolve) tracef("return ready result");
-                return ResolverResult6(status, addresses);
-            }
-            // called without loop/callback, we can and have to block
-            int nfds, count;
-            fd_set readers, writers;
-            timeval tv;
-            timeval *tvp;
-
-            while (!done) {
-                FD_ZERO(&readers);
-                FD_ZERO(&writers);
-                nfds = ares_fds(_ares_channel, &readers, &writers);
-                if (nfds == 0)
-                    break;
-                tvp = ares_timeout(_ares_channel, null, &tv);
-                count = select(nfds, &readers, &writers, null, tvp);
-                ares_process(_ares_channel, &readers, &writers);
-            }
-            debug(hioresolve) tracef("return received result");
-            return ResolverResult6(status, addresses);
-        }
-        else
-        {
-            bool yielded;
-            void cbb(int s, ubyte[16][] a)
-            {
-                status = s;
-                foreach (ia; a) {
-                    addresses ~= new Internet6Address(ia, port);
-                }
-                done = true;
-                _cb6d.remove(id);
-                debug(hioresolve) tracef("resolve for %s: %s, %s, yielded: %s", hostname, ares_strerror(s), a, yielded);
-                if (yielded) fiber.call();
-            }
-            // handleLockedFibers call callbacks for concurrent resolves
-            // when first resolution completes
-            void handleLockedFibers()
-            {
-                if ( _lockingEnabled )
-                {
-                    auto inActiveResolving = _activeResolves6d.fetch(hostname);
-                    assert(inActiveResolving.ok);
-                    foreach (cb; inActiveResolving.value)
-                    {
-                        debug(hioresolve) tracef("wakeup resolving waitor");
-                        cb(status, addresses.map!"a.addr".array);
-                    }
-                    _activeResolves6d.remove(hostname);
-                }
-            }
-
-            if (!_loop)
-            {
-                _loop = getDefaultLoop();
-            }
-            // if locking enabled we can put current fiber on hold in case
-            // resolving for `hostname` already started. It will be called when
-            // firts resoluthion completes
-            if ( _lockingEnabled )
-            {
-                auto inActiveResolving = _activeResolves6d.fetch(hostname);
-                if ( !inActiveResolving.ok )
-                {
-                    // first enter
-                    _activeResolves6d.put(hostname, new ResolverCallbackDelegate6[](0));
-                }
-                else
-                {
-                    // some follower, add to list of waitors
-                    debug(hioresolve) tracef("have to lock on resolving");
-                    auto waitors = inActiveResolving.value;
-                    waitors ~= &cbb;
-                    _activeResolves6d.put(hostname, waitors);
-                    yielded = true;
-                    Fiber.yield();
-                    return ResolverResult6(status, addresses);
-                }
-            }
-            _cb6d[id] = Callback6InfoD(hostname, &cbb);
-            ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, ares_callback6, cast(void*)id);
-            if ( done )
-            {
-                // resolved from files
-                debug(hioresolve) tracef("return ready result");
-                handleLockedFibers();
-                return ResolverResult6(status, addresses);
-            }
-            auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-            debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
-            // prepare listening for socket events
-            handleGetSocks(rc, &_sockets);
-            yielded = true;
-            Fiber.yield();
-            handleLockedFibers();
-            return ResolverResult6(status, addresses);
-        }
-    }
 
     private void handleGetSocks(int rc, ares_socket_t[ARES_GETSOCK_MAXNUM] *s) @safe
     {
@@ -891,132 +1034,31 @@ package class Resolver: FileEventHandler
         }
         return dnsInfo;
     }
-    ///
-    /// increment request id,
-    /// register callbacks in resolver,
-    /// start listening on sockets.
-    ///
-    auto gethostbyname(F)(string hostname, hlEvLoop loop, F cb) @safe if (isCallable!F)
-    {
-        debug(hioresolve) tracef("resolving %s", hostname);
-        int addr;
-        int p = () @trusted {return inet_pton(AF_INET, toStringz(hostname), &addr);}();
-        if (p > 0)
-        {
-            debug(hioresolve) tracef("address converetd from %s", hostname, p);
-            cb(ARES_SUCCESS, [ntohl(addr)]);
-            return;
-        }
-        assert(!_loop || _loop is loop);
-        if (_loop is null)
-        {
-            _loop = loop;
-        }
-        DNSCacheEntry dnsInfo;
-        auto now = Clock.currStdTime;
-        auto f = _cache.fetch(hostname);
-        if ( f.ok && ( now - f.value._timestamp < f.value._ttl))
-        {
-            cb(f.value._status, f.value._addresses);
-            return;
-        }
-        // try to resolve from files
-        dnsInfo = resolve4FromFile(hostname);
-        if ( dnsInfo._status == ARES_SUCCESS)
-        {
-            _cache.put(hostname, dnsInfo);
-            debug(hioresolve) tracef("return dns from file for \"%s\"", hostname);
-            cb(dnsInfo._status, dnsInfo._addresses);
-            return;
-        }
-
-        auto id = ++_id;
-        static if (isDelegate!F)
-        {
-            _cb4d[id] = Callback4InfoD(hostname, cb);
-        }
-        else
-        {
-            _cb4f[id] = Callback4InfoF(hostname, cb);
-        }
-        // request for A records
-        () @trusted {
-            ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_a, ares_callback4, cast(void*)id);
-        }();
-        auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
-        // prepare listening for socket events
-        handleGetSocks(rc, &_sockets);
-    }
-    auto gethostbyname6(F)(string hostname, hlEvLoop loop, F cb) @safe if (isCallable!F)
-    {
-        assert(!_loop || _loop is loop);
-        if (_loop is null)
-        {
-            _loop = loop;
-        }
-        DNS6CacheEntry dnsInfo;
-        auto now = Clock.currStdTime;
-        auto f = _cache6.fetch(hostname);
-        if ( f.ok && ( now - f.value._timestamp < f.value._ttl) )
-        {
-            cb(f.value._status, f.value._addresses);
-            return;
-        }
-        // try to resolve from files
-        dnsInfo = resolve6FromFile(hostname);
-        if ( dnsInfo._status == ARES_SUCCESS )
-        {
-            _cache6.put(hostname, dnsInfo);
-            debug(hioresolve) tracef("return dns from file for \"%s\"", hostname);
-            cb(dnsInfo._status, dnsInfo._addresses);
-            return;
-        }
-
-        auto id = ++_id;
-        static if (isDelegate!F)
-        {
-            _cb6d[id] = Callback6InfoD(hostname, cb);
-        }
-        else
-        {
-            _cb6f[id] = Callback6InfoF(hostname, cb);
-        }
-        // request for A records
-        ()@trusted {
-            ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, ares_callback6, cast(void*)id);
-        }();
-        auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
-        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
-        // prepare listening for socket events
-        handleGetSocks(rc, &_sockets);
-    }
 }
 
 unittest
 {
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/sync  INET4 ===");
-    auto resolver = theResolver;
-    auto r = resolver.gethostbyname("localhost");
+    auto r = hio_gethostbyname("localhost");
     assert(r.status == 0);
     debug(hioresolve) tracef("%s", r);
-    r = resolver.gethostbyname("8.8.8.8");
+    r = hio_gethostbyname("8.8.8.8");
     assert(r.status == 0);
     debug(hioresolve) tracef("%s", r);
-    r = resolver.gethostbyname("dlang.org");
+    r = hio_gethostbyname("dlang.org");
     assert(r.status == 0);
     debug(hioresolve) tracef("%s", r);
-    r = resolver.gethostbyname(".......");
+    r = hio_gethostbyname(".......");
     assert(r.status != 0);
     tracef("status: %s", ares_statusString(r.status));
-    r = resolver.gethostbyname(".......");
+    r = hio_gethostbyname(".......");
     assert(r.status != 0);
-    r = resolver.gethostbyname("iuytkjhcxbvkjhgfaksdjf");
+    r = hio_gethostbyname("iuytkjhcxbvkjhgfaksdjf");
     assert(r.status != 0);
     debug(hioresolve) tracef("%s", r);
     debug(hioresolve) tracef("status: %s", ares_statusString(r.status));
-    r = resolver.gethostbyname("iuytkjhcxbvkjhgfaksdjf");
+    r = hio_gethostbyname("iuytkjhcxbvkjhgfaksdjf");
     assert(r.status != 0);
     debug(hioresolve) tracef("%s", r);
     debug(hioresolve) tracef("status: %s", ares_statusString(r.status));
@@ -1026,20 +1068,19 @@ unittest
 {
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/sync  INET6 ===");
-    auto resolver = theResolver;
     // auto r = resolver.gethostbyname6("ip6-localhost");
     // assert(r.status == 0);
     // debug(hioresolve) tracef("%s", r);
     // r = resolver.gethostbyname6("8.8.8.8");
     // assert(r.status == 0);
     // debug(hioresolve) tracef("%s", r);
-    auto r = resolver.gethostbyname6("dlang.org");
+    auto r = hio_gethostbyname6("dlang.org");
     assert(r.status == 0);
     debug(hioresolve) tracef("%s", r);
-    r = resolver.gethostbyname6(".......");
+    r = hio_gethostbyname6(".......");
     assert(r.status != 0);
     tracef("status: %s", ares_statusString(r.status));
-    r = resolver.gethostbyname6(".......");
+    r = hio_gethostbyname6(".......");
     assert(r.status != 0);
 }
 
@@ -1048,6 +1089,7 @@ unittest
     import std.array: array;
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/async INET4 ===");
+    theResolver = new Resolver();
     auto resolver = theResolver;
     auto app(string hostname)
     {
@@ -1070,8 +1112,7 @@ unittest
                 fiber.call();
             }
         }
-        auto loop = getDefaultLoop();
-        resolver.gethostbyname(hostname, loop, &cb);
+        gethostbyname(hostname, &cb);
         if (!done)
         {
             yielded = true;
@@ -1099,12 +1140,15 @@ unittest
     {
         errorf("%s", e);
     }
+    theResolver.close();
+    theResolver = null;
 }
 unittest
 {
     import std.array: array;
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/async INET6 ===");
+    theResolver = new Resolver();
     auto resolver = theResolver;
     auto app(string hostname)
     {
@@ -1128,8 +1172,7 @@ unittest
                 fiber.call();
             }
         }
-        auto loop = getDefaultLoop();
-        resolver.gethostbyname6(hostname, loop, &cb);
+        gethostbyname6(hostname, &cb);
         if (!done)
         {
             yielded = true;
@@ -1149,6 +1192,8 @@ unittest
     {
         errorf("%s", e);
     }
+    theResolver.close();
+    theResolver = null;
 }
 
 unittest
@@ -1159,7 +1204,7 @@ unittest
         import std.array: array;
         auto resolve(string name)
         {
-            auto r = theResolver.gethostbyname(name);
+            auto r = hio_gethostbyname(name);
             debug(hioresolve) tracef("app resolved %s=%s", name, r);
             return r;
         }
@@ -1186,7 +1231,7 @@ unittest
         import std.array: array;
         auto resolve(string name)
         {
-            auto r = theResolver.gethostbyname6(name);
+            auto r = hio_gethostbyname6(name);
             debug(hioresolve) tracef("app resolved %s=%s", name, r);
             return r;
         }
