@@ -150,7 +150,7 @@ class AsyncHTTPClient
                 _callback(r);
                 return;
             }
-            string location = r.getHeader("location").asString!(dup);
+            string location = r.getHeader("location").toString;
             prepareRedirect(location);
             _execute();
             return;
@@ -258,7 +258,7 @@ class AsyncHTTPClient
         Nbuff message_header;
         auto request_line = _build_request_line();
         message_header.append(request_line);
-        if (_verbosity >= 1) writef("-> %s", request_line.asString!(dup));
+        if (_verbosity >= 1) writef("-> %s", request_line.toString);
 
         if ( !_request.user_headers_flags.AcceptEncoding )
         {
@@ -569,16 +569,18 @@ struct AsyncHTTP
         if ( _verbosity >= 1 ) {
             writefln("<- %s: %s", cast(string)field.data, cast(string)value.data);
         }
-        if (field.asString!(toLower) == "content-encoding" )
+        if (field.toString.toLower == "content-encoding" )
         {
-            string v = value.asString!(toLower);
+            string v = value.toString.toLower;
             switch (v)
             {
                 case "gzip":
+                    debug(hiohttp) tracef("decode from gzip");
                     _content_encoding = ContentEncoding.GZIP;
                     _zlib.zInit(_client._buffer_size);
                     break;
                 case "deflate":
+                    debug(hiohttp) tracef("decode from deflate");
                     _content_encoding = ContentEncoding.DEFLATE;
                     _zlib.zInit(_client._buffer_size);
                     break;
@@ -955,6 +957,7 @@ unittest
         hlSleep(10.seconds);
     });
 
+    globalLogLevel = LogLevel.info;
     App({
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
