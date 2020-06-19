@@ -8,6 +8,7 @@ import std.container;
 import std.exception;
 import std.experimental.logger;
 import std.typecons;
+import std.range;
 import std.algorithm: min, max;
 
 import std.experimental.allocator;
@@ -33,6 +34,8 @@ import timingwheels;
 import hio.events;
 import hio.common;
 
+private enum InExpTimersSize = 16;
+
 struct NativeEventLoopImpl {
     immutable bool   native = true;
     immutable string _name = "epoll";
@@ -53,7 +56,7 @@ struct NativeEventLoopImpl {
         Signal[][int]           signals;
         //FileHandlerFunction[int] fileHandlers;
         FileEventHandler[]      fileHandlers;
-        Timer[256]              inExpireTimers;
+        Timer[InExpTimersSize]  inExpireTimers;
         long                    inExpireTimersCount;
 
     }
@@ -235,27 +238,29 @@ struct NativeEventLoopImpl {
             if(toCatchUp>0)
             {
                 auto wr = timingwheels.advance(toCatchUp);
-                assert(wr.length <= 256);
-                inExpireTimersCount = wr.length;
-                int j;
-                foreach (t; wr.timers)
+                foreach (chunk; wr.timers.chunks(InExpTimersSize))
                 {
-                    inExpireTimers[j++] = t;
-                }
-                for(j=0; j < inExpireTimersCount; j++)
-                {
-                    Timer t = inExpireTimers[j];
-                    if (t is null)
+                    int j = 0;
+                    foreach(t; chunk)
                     {
-                        continue;
+                        inExpireTimers[j++] = t;
                     }
-                    HandlerDelegate h = t._handler;
-                    assert(t._armed);
-                    t._armed = false;
-                    try {
-                        h(AppEvent.TMO);
-                    } catch (Exception e) {
-                        errorf("Uncaught exception: %s", e);
+                    inExpireTimersCount = j;
+                    for(j=0; j < inExpireTimersCount; j++)
+                    {
+                        Timer t = inExpireTimers[j];
+                        if (t is null)
+                        {
+                            continue;
+                        }
+                        HandlerDelegate h = t._handler;
+                        assert(t._armed);
+                        t._armed = false;
+                        try {
+                            h(AppEvent.TMO);
+                        } catch (Exception e) {
+                            errorf("Uncaught exception: %s", e);
+                        }
                     }
                 }
             }
