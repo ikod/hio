@@ -82,6 +82,11 @@ struct NativeEventLoopImpl {
             close(timer_fd);
             timer_fd = -1;
         }
+        if (signal_fd>=0)
+        {
+            close(signal_fd);
+            signal_fd = -1;
+        }
         //precise_timers = null;
         if (fileHandlers !is null)
         {

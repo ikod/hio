@@ -169,6 +169,8 @@ unittest {
         loop.run(1.seconds);
         assert(Clock.currTime - now < 1.seconds);
     }
+    native.deinit();
+    fallb.deinit();
 }
 
 unittest {
@@ -309,7 +311,8 @@ unittest {
         // globalLogLevel = logLevel;
         // infof(" --- end ---");
     }
-
+    native.deinit();
+    fallb.deinit();
 }
 
 unittest {
@@ -358,6 +361,8 @@ unittest {
         }
         loop.run(1.msecs); // send stopSignals to kernel
     }
+    native.deinit();
+    fallb.deinit();
     globalLogLevel = savedloglevel;
 }
 
@@ -459,4 +464,6 @@ unittest {
         assert(responses == limit, "%s != %s".format(responses, limit));
         globalLogLevel = LogLevel.info;
     }
+    native.deinit();
+    fallb.deinit();
 }

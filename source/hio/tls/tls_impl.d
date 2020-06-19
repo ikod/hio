@@ -653,13 +653,16 @@ unittest
 {
     globalLogLevel = LogLevel.info;
     App({
+        AsyncSSLSocket s = new AsyncSSLSocket();
+        scope(exit)
+        {
+            s.close();
+        }
         void connected(AppEvent ev)
         {
             debug (hiossl)
                 tracef("connected");
         }
-
-        AsyncSSLSocket s = new AsyncSSLSocket();
         s.open();
         s.connect(new InternetAddress("1.1.1.1", 443), getDefaultLoop(), &connected, 1.seconds);
         hlSleep(1.seconds);

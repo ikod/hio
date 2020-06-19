@@ -1286,6 +1286,10 @@ unittest {
 
     void server(ushort port) {
         auto s = new HioSocket();
+        scope(exit)
+        {
+            s.close();
+        }
         s.bind("127.0.0.1:%s".format(port));
         s.listen();
         auto c = s.accept(2.seconds);
@@ -1301,10 +1305,10 @@ unittest {
     }
     void client(ushort port) {
         auto s = new HioSocket();
-        s.connect("127.0.0.1:%d".format(port), 1.seconds);
         scope(exit) {
             s.close();
         }
+        s.connect("127.0.0.1:%d".format(port), 1.seconds);
         if ( s.connected ) {
             auto rq = s.send("hello".representation, 1.seconds);
             auto rs = s.recv(64, 1.seconds);
@@ -1317,6 +1321,10 @@ unittest {
     {
         auto s = new hlSocket();
         s.open();
+        scope(exit)
+        {
+            s.close();
+        }
         auto ok = s.connect("127.0.0.1:%d".format(port), 1.seconds);
         IORequest iorq;
         iorq.output = Nbuff("hello");
@@ -1417,6 +1425,7 @@ unittest {
         assert(b.data == "bb".representation);
         assert(c.data == "ccc".representation);
         assert(rest.data == "rest".representation);
+        s.close();
     });
     t.join;
 }

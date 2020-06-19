@@ -780,6 +780,13 @@ class HTTPClient
         Fiber.yield();
         return result;
     }
+    void close()
+    {
+        if ( _async_client !is null )
+        {
+            _async_client.close();
+        }
+    }
 }
 
 unittest
@@ -795,6 +802,7 @@ unittest
         writefln("result: %s", r);
         r = c.execute(Method("GET"), parse_url("https://httpbin.org/get"));
         writefln("result: %s", r);
+        c.close();
     });
 }
 
