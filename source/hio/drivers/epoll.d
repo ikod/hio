@@ -8,7 +8,7 @@ import std.container;
 import std.exception;
 import std.experimental.logger;
 import std.typecons;
-import std.range;
+import std.traits;
 import std.algorithm: min, max;
 
 import std.experimental.allocator;
@@ -35,6 +35,8 @@ import hio.events;
 import hio.common;
 
 private enum InExpTimersSize = 16;
+private alias TW = TimingWheels!Timer;
+private alias TWAdvanceResult = ReturnType!(TW.advance!(TW));
 
 struct NativeEventLoopImpl {
     immutable bool   native = true;
@@ -50,14 +52,17 @@ struct NativeEventLoopImpl {
         align(1)                epoll_event[MAXEVENTS] events;
 
         Duration                tick = 5.msecs;
-        TimingWheels!Timer      timingwheels;
-        //RedBlackTree!Timer      precise_timers;
+        TW                      timingwheels;
+
+        TWAdvanceResult         advancedTimersHash;
+        long                    advancedTimersHashLength;
+
+        Timer[InExpTimersSize]  advancedTimersArray;
+        long                    advancedTimersArrayLength;
+
         Timer[]                 overdue;    // timers added with expiration in past
         Signal[][int]           signals;
-        //FileHandlerFunction[int] fileHandlers;
         FileEventHandler[]      fileHandlers;
-        Timer[InExpTimersSize]  inExpireTimers;
-        long                    inExpireTimersCount;
 
     }
     @disable this(this) {}
@@ -99,6 +104,7 @@ struct NativeEventLoopImpl {
         }
         timingwheels = TimingWheels!(Timer)();
         timingwheels.init();
+        advancedTimersHash = TWAdvanceResult.init;
     }
 
     void stop() @safe {
@@ -173,6 +179,7 @@ struct NativeEventLoopImpl {
             }
             if ( ready < 0 ) {
                 errorf("epoll_wait returned error %s", fromStringz(strerror(errno)));
+                // throw new Exception("epoll errno");
             }
 
             debug(hioepoll) tracef("events: %s", events[0..ready]);
@@ -237,19 +244,38 @@ struct NativeEventLoopImpl {
             auto toCatchUp = timingwheels.ticksToCatchUp(tick, now_real.stdTime);
             if(toCatchUp>0)
             {
-                auto wr = timingwheels.advance(toCatchUp);
-                foreach (chunk; wr.timers.chunks(InExpTimersSize))
+                /*
+                ** Some timers expired.
+                ** --------------------
+                ** Most of the time the number of this timers is  low, so  we optimize for
+                ** this case: copy this small number of timers into small array, then ite-
+                ** rate over this array.
+                **
+                ** Another case - number of expired timers > InExpTimersSize, so  we can't
+                ** copy timers to this array. Then we just iterate over the result.
+                **
+                ** Why  do we need random access to any expired timer (so we have  to save 
+                ** it in array or in map)  - because any timer handler may wish  to cancel
+                ** another timer (and this another timer can also be in 'advance' result).
+                ** Example - expired timer wakes up some task which cancel socket io timer.
+                */
+                advancedTimersHash = timingwheels.advance(toCatchUp);
+                if (advancedTimersHash.length < InExpTimersSize)
                 {
+                    //
+                    // this case happens most of the time - low number of timers per tick
+                    // save expired timers into small array.
+                    //
                     int j = 0;
-                    foreach(t; chunk)
+                    foreach(t; advancedTimersHash.timers)
                     {
-                        inExpireTimers[j++] = t;
+                        advancedTimersArray[j++] = t;
                     }
-                    inExpireTimersCount = j;
-                    for(j=0; j < inExpireTimersCount; j++)
+                    advancedTimersArrayLength = j;
+                    for(j=0;j < advancedTimersArrayLength; j++)
                     {
-                        Timer t = inExpireTimers[j];
-                        if (t is null)
+                        Timer t = advancedTimersArray[j];
+                        if ( t is null )
                         {
                             continue;
                         }
@@ -263,6 +289,23 @@ struct NativeEventLoopImpl {
                         }
                     }
                 }
+                else
+                {
+                    advancedTimersHashLength = advancedTimersHash.length;
+                    foreach (t; advancedTimersHash.timers)
+                    {
+                        HandlerDelegate h = t._handler;
+                        assert(t._armed);
+                        t._armed = false;
+                        try {
+                            h(AppEvent.TMO);
+                        } catch (Exception e) {
+                            errorf("Uncaught exception: %s", e);
+                        }
+                    }
+                }
+                advancedTimersArrayLength = 0;
+                advancedTimersHashLength = 0;
             }
             execute_overdue_timers();
             if (!runInfinitely && now_real >= deadline)
@@ -291,160 +334,29 @@ struct NativeEventLoopImpl {
 
     void stop_timer(Timer t) @safe {
         debug(hioepoll) safe_tracef("remove timer %s", t);
-        for(int j=0; j<inExpireTimersCount;j++)
+        if ( advancedTimersArrayLength > 0)
         {
-            if ( t is inExpireTimers[j])
+            for(int j=0; j<advancedTimersArrayLength;j++)
             {
-                // trying to stop currently expired timer,
-                // just skip (it already removed from wheel) and mark as processed.
-                inExpireTimers[j] = null;
-                return;
+                if ( t is advancedTimersArray[j])
+                {
+                    advancedTimersArray[j] = null;
+                    return;
+                }
             }
         }
+        else if (advancedTimersHashLength>0 && advancedTimersHash.contains(t.id))
+        {
+            advancedTimersHash.remove(t.id);
+            return;
+        }
+
         if (timingwheels.totalTimers() > 0)
         {
             // static destructors can try to stop timers after loop deinit
             timingwheels.cancel(t);
         }
     }
-
-    // void start_precise_timer(Timer t) @safe {
-    //     debug(hioepoll) tracef("insert timer %s", t);
-    //     if ( precise_timers.empty || t < precise_timers.front ) {
-    //         auto d = t._expires - Clock.currTime;
-    //         d = max(d, 0.seconds);
-    //         if ( d == 0.seconds ) {
-    //             overdue ~= t;
-    //             return;
-    //         }
-    //         debug(hioepoll) {
-    //             tracef("timers: %s", precise_timers);
-    //         }
-    //         if ( precise_timers.empty ) {
-    //             _add_kernel_timer(t, d);
-    //         } else {
-    //             _mod_kernel_timer(t, d);
-    //         }
-    //     }
-    //     precise_timers.insert(t);
-    // }
-
-    // void stop_precise_timer(Timer t) @safe {
-    //     debug(hioepoll) tracef("remove timer %s", t);
-
-    //     if ( t !is precise_timers.front ) {
-    //         debug(hioepoll) tracef("Non front timer: %s", precise_timers);
-    //         auto r = precise_timers.equalRange(t);
-    //         precise_timers.remove(r);
-    //         return;
-    //     }
-
-    //     precise_timers.removeFront();
-    //     debug(hioepoll) trace("we have to del this timer from kernel or set to next");
-    //     if ( !precise_timers.empty ) {
-    //         // we can change kernel timer to next,
-    //         // If next timer expired - set delta = 0 to run on next loop invocation
-    //         debug(hioepoll) trace("set up next timer");
-    //         auto next = precise_timers.front;
-    //         auto d = next._expires - Clock.currTime;
-    //         d = max(d, 0.seconds);
-    //         _mod_kernel_timer(precise_timers.front, d);
-    //         return;
-    //     }
-    //     debug(hioepoll) trace("remove last timer");
-    //     _del_kernel_timer();
-    // }
-
-    // void _add_kernel_timer(Timer t, in Duration d) @trusted {
-    //     debug(hioepoll) trace("add kernel timer");
-    //     assert(d > 0.seconds);
-    //     itimerspec itimer;
-    //     auto ds = d.split!("seconds", "nsecs");
-    //     itimer.it_value.tv_sec = cast(typeof(itimer.it_value.tv_sec)) ds.seconds;
-    //     itimer.it_value.tv_nsec = cast(typeof(itimer.it_value.tv_nsec)) ds.nsecs;
-    //     int rc = timerfd_settime(timer_fd, 0, &itimer, null);
-    //     enforce(rc >= 0, "timerfd_settime(%s): %s".format(itimer, fromStringz(strerror(errno))));
-    //     epoll_event e;
-    //     e.events = EPOLLIN|EPOLLET;
-    //     e.data.fd = timer_fd;
-    //     rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer_fd, &e);
-    //     enforce(rc >= 0, "epoll_ctl add(%s): %s".format(e, fromStringz(strerror(errno))));
-    // }
-    // void _mod_kernel_timer(Timer t, in Duration d) @trusted {
-    //     debug(hioepoll) tracef("mod kernel timer to %s", t);
-    //     assert(d >= 0.seconds, "Illegal timer %s".format(d));
-    //     itimerspec itimer;
-    //     auto ds = d.split!("seconds", "nsecs");
-    //     itimer.it_value.tv_sec = cast(typeof(itimer.it_value.tv_sec)) ds.seconds;
-    //     itimer.it_value.tv_nsec = cast(typeof(itimer.it_value.tv_nsec)) ds.nsecs;
-    //     int rc = timerfd_settime(timer_fd, 0, &itimer, null);
-    //     enforce(rc >= 0, "timerfd_settime(%s): %s".format(itimer, fromStringz(strerror(errno))));
-    //     epoll_event e;
-    //     e.events = EPOLLIN|EPOLLET;
-    //     e.data.fd = timer_fd;
-    //     rc = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, timer_fd, &e);
-    //     enforce(rc >= 0);
-    // }
-    // void _del_kernel_timer() @trusted {
-    //     debug(hioepoll) trace("del kernel timer");
-    //     epoll_event e;
-    //     e.events = EPOLLIN;
-    //     e.data.fd = timer_fd;
-    //     int rc = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, timer_fd, &e);
-    //     enforce(rc >= 0, "epoll_ctl del(%s): %s".format(e, fromStringz(strerror(errno))));
-    // }
-    //
-    // notifications
-    //
-    // pragma(inline)
-    // void processNotification(Notification ue, Broadcast broadcast) @safe {
-    //     ue.handler(broadcast);
-    // }
-    // void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
-    //     debug(hioepoll) trace("posting notification");
-    //     if ( !notificationsQueue.full )
-    //     {
-    //         debug(hioepoll) trace("put notification");
-    //         notificationsQueue.put(NotificationDelivery(notification, broadcast));
-    //         debug(hioepoll) trace("put notification done");
-    //         return;
-    //     }
-    //     // now try to find space for next notification
-    //     auto retries = 10 * notificationsQueue.Size;
-    //     while(notificationsQueue.full && retries > 0)
-    //     {
-    //         retries--;
-    //         auto nd = notificationsQueue.get();
-    //         Notification _n = nd._n;
-    //         Broadcast _b = nd._broadcast;
-    //         processNotification(_n, _b);
-    //     }
-    //     enforce(!notificationsQueue.full, "Can't clear space for next notification in notificatioinsQueue");
-    //     notificationsQueue.put(NotificationDelivery(notification, broadcast));
-    //     debug(hioepoll) trace("posting notification - done");
-    // }
-
-
-    //void postNotification(Notification notification, Broadcast broadcast = No.broadcast) @safe {
-    //    debug(hioepoll) trace("posting notification");
-    //    if ( !notificationsQueue.full )
-    //    {
-    //        notificationsQueue.put(NotificationDelivery(notification, broadcast));
-    //        return;
-    //    }
-    //    // now try to find space for next notification
-    //    auto retries = 10 * notificationsQueue.Size;
-    //    while(notificationsQueue.full && retries > 0)
-    //    {
-    //        retries--;
-    //        auto nd = notificationsQueue.get();
-    //        Notification _n = nd._n;
-    //        Broadcast _b = nd._broadcast;
-    //        processNotification(_n, _b);
-    //    }
-    //    enforce(!notificationsQueue.full, "Can't clear space for next notification in notificatioinsQueue");
-    //    notificationsQueue.put(NotificationDelivery(notification, broadcast));
-    //}
 
     //
     // signals
