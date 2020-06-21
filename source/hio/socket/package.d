@@ -1283,7 +1283,6 @@ struct LineReader
 unittest {
     import core.thread;
     import hio.scheduler;
-
     void server(ushort port) {
         auto s = new HioSocket();
         scope(exit)
@@ -1337,6 +1336,10 @@ unittest {
     globalLogLevel = LogLevel.info;
     info("Test hlSocket");
     auto t = new Thread({
+        scope(exit)
+        {
+            uninitializeLoops();
+        }
         try{
             App(&server, cast(ushort)12345);
         } catch (Exception e) {
@@ -1352,6 +1355,10 @@ unittest {
 
     // all ok case
     t = new Thread({
+        scope(exit)
+        {
+            uninitializeLoops();
+        }
         try{
             App(&server, cast(ushort)12345);
         } catch (Exception e) {
@@ -1365,6 +1372,10 @@ unittest {
     info("Test HioSockets 1");
     // all fail case - everything should throw
     t = new Thread({
+        scope(exit)
+        {
+            uninitializeLoops();
+        }
         App(&server, cast(ushort) 12345);
     }).start;
     assertThrown!Exception(client(12346));
@@ -1373,7 +1384,12 @@ unittest {
     info("Test HioSockets 2");
     // the same but client in App
     // all ok case
+    globalLogLevel = LogLevel.info;
     t = new Thread({
+        scope(exit)
+        {
+            uninitializeLoops();
+        }
         App(&server, cast(ushort) 12345);
     }).start;
     Thread.sleep(500.msecs);
@@ -1382,13 +1398,23 @@ unittest {
 
     info("Test HioSockets 3");
     // all fail case - everything should throw
-    t = new Thread({ App(&server, cast(ushort) 12345); }).start;
+    t = new Thread({
+        scope(exit)
+        {
+            uninitializeLoops();
+        }
+        App(&server, cast(ushort) 12345);
+    }).start;
     assertThrown!Exception(App(&client, cast(ushort)12346));
     assertThrown!Exception(t.join);
 
     info("Test lineReader");
     globalLogLevel = LogLevel.info;
     t = new Thread({
+        scope(exit)
+        {
+            uninitializeLoops();
+        }
         App({
             auto s = new HioSocket();
             s.bind("127.0.0.1:12345");
