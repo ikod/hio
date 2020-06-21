@@ -6,7 +6,6 @@ shared static this()
 {
     init_ssl_library();
 }
-
 import std.experimental.logger;
 import hio.tls.common;
 
@@ -91,6 +90,7 @@ package extern(C)
     char*       ERR_reason_error_string(ulong) @trusted nothrow;
     char*       ERR_error_string(ulong, char*) @trusted nothrow;
     ulong       ERR_get_error() @trusted nothrow;
+    void        OPENSSL_cleanup() @trusted nothrow;
 }
 
 void init_ssl_library()

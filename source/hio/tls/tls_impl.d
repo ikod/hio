@@ -272,15 +272,15 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
             _so.close();
             _so = null;
         }
-        if ( _ssl )
-        {
-            SSL_free(_ssl);
-            _ssl = null;
-        }
         if ( _ctx )
         {
             SSL_CTX_free(_ctx);
             _ctx = null;
+        }
+        if ( _ssl )
+        {
+            SSL_free(_ssl);
+            _ssl = null;
         }
         _input.release;
         _ioResult = IOResult();
@@ -654,17 +654,19 @@ unittest
     globalLogLevel = LogLevel.info;
     App({
         AsyncSSLSocket s = new AsyncSSLSocket();
+        void connected(AppEvent ev) @safe
+        {
+            debug (hiossl)
+                tracef("connected");
+            getDefaultLoop.stop();
+        }
+        s.open();
         scope(exit)
         {
             s.close();
         }
-        void connected(AppEvent ev)
-        {
-            debug (hiossl)
-                tracef("connected");
-        }
-        s.open();
         s.connect(new InternetAddress("1.1.1.1", 443), getDefaultLoop(), &connected, 1.seconds);
-        hlSleep(1.seconds);
+        getDefaultLoop.run();
     });
+    uninitializeLoops();
 }

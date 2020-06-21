@@ -273,7 +273,6 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         }
         this._child = new Thread(
             {
-                uninitializeLoops(); // close parent loop fds
                 getDefaultLoop.startPoll(_commands[0], AppEvent.IN, new CommandsHandler());
                 try {
                     debug safe_tracef("calling");

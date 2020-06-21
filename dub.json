@@ -28,7 +28,7 @@
         {
             "name": "unittest",
 	    "versions": ["openssl11"],
-            "debugVersions": ["hiohttp", "redisd"]
+            "debugVersions": ["hiohttp"]
         }
     ],
     "lflags": ["-L$HIO_PACKAGE_DIR/submodules/http-parser"],

@@ -766,7 +766,7 @@ class HTTPClient
     {
         _async_client = new AsyncHTTPClient();
     }
-    AsyncHTTPResult execute(Method method, URL url)  @trusted
+    AsyncHTTPResult execute(Method method, URL url)  @safe
     {
         AsyncHTTPResult result;
         Fiber f = Fiber.getThis();
@@ -777,7 +777,9 @@ class HTTPClient
             f.call();
         }
         _async_client.execute(method, url, &callback);
-        Fiber.yield();
+        () @trusted {
+            Fiber.yield();
+        }();
         return result;
     }
     void close()
@@ -794,7 +796,7 @@ unittest
     import std.stdio;
     import hio.scheduler;
     import std.experimental.logger;
-    globalLogLevel = LogLevel.trace;
+    globalLogLevel = LogLevel.info;
     App({
         info("Test httpclient in task");
         HTTPClient c = new HTTPClient();
@@ -804,6 +806,7 @@ unittest
         writefln("result: %s", r);
         c.close();
     });
+    uninitializeLoops();
 }
 
 struct AsyncHTTPResult
@@ -885,7 +888,7 @@ unittest
         URL url = parse_url("http://httpbin.org/stream/100");
         client.verbosity = 1;
         client.execute(Method("GET"), url, &callback);
-        hlSleep(25.seconds);
+        getDefaultLoop.run();
     });
     globalLogLevel = LogLevel.info;
     App({
@@ -914,40 +917,40 @@ unittest
         client.execute(Method("GET"), url, &callback);
         hlSleep(25.seconds);
     });
-    // test redirects
-    App({
-        info("test absolute redirects");
-        AsyncHTTPClient client = new AsyncHTTPClient();
-        void callback(AsyncHTTPResult result) @safe
-        {
-            assert(result.status_code == 200);
-            debug writefln("<%s>", cast(string)result.response_body.data.data);
-            client.close();
-            getDefaultLoop.stop();
-        }
-        URL url = parse_url("http://httpbin.org/absolute-redirect/3");
-        client.verbosity = 1;
-        client.execute(Method("GET"), url, &callback);
-        hlSleep(25.seconds);
-    });
+    // test redirects - disabled while httpbin.org give 404 on this url
+    // App({
+    //     info("test absolute redirects");
+    //     AsyncHTTPClient client = new AsyncHTTPClient();
+    //     void callback(AsyncHTTPResult result) @safe
+    //     {
+    //         assert(result.status_code == 200);
+    //         debug writefln("<%s>", cast(string)result.response_body.data.data);
+    //         client.close();
+    //         getDefaultLoop.stop();
+    //     }
+    //     URL url = parse_url("http://httpbin.org/absolute-redirect/3");
+    //     client.verbosity = 1;
+    //     client.execute(Method("GET"), url, &callback);
+    //     hlSleep(25.seconds);
+    // });
 
-    App({
-        info("test absolute redirects with limited redirects number");
-        AsyncHTTPClient client = new AsyncHTTPClient();
-        void callback(AsyncHTTPResult result) @safe
-        {
-            assert(result.status_code == -1);
-            assert(result.error == AsyncHTTPErrors.MaxRedirectsReached);
-            debug writefln("<%s>", cast(string)result.response_body.data.data);
-            client.close();
-            getDefaultLoop.stop();
-        }
-        URL url = parse_url("http://httpbin.org/absolute-redirect/3");
-        client.verbosity = 1;
-        client._max_redirects = 1;
-        client.execute(Method("GET"), url, &callback);
-        hlSleep(25.seconds);
-    });
+    // App({
+    //     info("test absolute redirects with limited redirects number");
+    //     AsyncHTTPClient client = new AsyncHTTPClient();
+    //     void callback(AsyncHTTPResult result) @safe
+    //     {
+    //         assert(result.status_code == -1);
+    //         assert(result.error == AsyncHTTPErrors.MaxRedirectsReached);
+    //         debug writefln("<%s>", cast(string)result.response_body.data.data);
+    //         client.close();
+    //         getDefaultLoop.stop();
+    //     }
+    //     URL url = parse_url("http://httpbin.org/absolute-redirect/3");
+    //     client.verbosity = 1;
+    //     client._max_redirects = 1;
+    //     client.execute(Method("GET"), url, &callback);
+    //     hlSleep(25.seconds);
+    // });
     App({
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe
@@ -1022,4 +1025,5 @@ unittest
         client.execute(Method("GET"), url, &callback);
         hlSleep(10.seconds);
     });
+    uninitializeLoops();
 }
