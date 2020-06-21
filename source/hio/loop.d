@@ -27,11 +27,11 @@ hlEvLoop getDefaultLoop(Mode mode = globalLoopMode) @safe nothrow {
 
 shared static this() {
     uninitializeLoops();
-};
+}
 
 shared static ~this() {
     uninitializeLoops();
-};
+}
 
 package void uninitializeLoops() {
     if (_defaultLoop[Mode.NATIVE])
@@ -153,6 +153,7 @@ unittest {
     auto fallback_loop = getDefaultLoop(Mode.FALLBACK);
     writefln("Native   event loop: %s", best_loop.name);
     writefln("Fallback event loop: %s", fallback_loop.name);
+    uninitializeLoops();
 }
 
 unittest {
@@ -323,6 +324,7 @@ unittest {
     import core.thread;
     import core.sys.posix.unistd;
     import core.sys.posix.sys.wait;
+    import core.stdc.stdlib: exit;
 
     int i1, i2;
     auto native = new hlEvLoop();
@@ -349,7 +351,9 @@ unittest {
             Thread.sleep(500.msecs);
             kill(parent_pid, SIGHUP);
             kill(parent_pid, SIGINT);
-            _exit(0);
+            native.deinit();
+            fallb.deinit();
+            exit(0);
         } else {
             loop.run(1.seconds);
             waitpid(child_pid, null, 0);
