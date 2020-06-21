@@ -82,8 +82,10 @@ struct FallbackEventLoopImpl {
         fileHandlers = new FileEventHandler[](1024);
         timingwheels.init();
     }
-    void deinit() @safe {
+    void deinit() @trusted {
         precise_timers = null;
+        timingwheels = TimingWheels!(Timer)();
+        timingwheels.init();
     }
     void stop() @safe {
         debug(hioselect) safe_tracef("mark eventloop as stopped");
