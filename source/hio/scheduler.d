@@ -113,10 +113,10 @@ ReturnType!F App(F, A...) (F f, A args) {
         getDefaultLoop.run(Duration.max);
         //t.reset();
     };
-    Thread child = new Thread(run);
-    child.start();
-    child.join();
-    //run();
+    // Thread child = new Thread(run);
+    // child.start();
+    // child.join();
+    run();
     if (box._exception)
     {
         throw box._exception;
