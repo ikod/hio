@@ -45,7 +45,6 @@ struct NativeEventLoopImpl {
         bool                    stopped = false;
         enum                    MAXEVENTS = 1024;
         int                     epoll_fd = -1;
-        int                     timer_fd = -1;
         int                     signal_fd = -1;
         sigset_t                mask;
 
@@ -71,10 +70,6 @@ struct NativeEventLoopImpl {
         if ( epoll_fd == -1 ) {
             epoll_fd = (() @trusted  => epoll_create(MAXEVENTS))();
         }
-        // if ( timer_fd == -1 ) {
-        //     timer_fd = (() @trusted => timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK))();
-        // }
-        //precise_timers = new RedBlackTree!Timer();
         fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
         GC.addRange(&fileHandlers[0], fileHandlers.length * FileEventHandler.sizeof);
         timingwheels.init();
@@ -84,11 +79,6 @@ struct NativeEventLoopImpl {
         {
             close(epoll_fd);
             epoll_fd = -1;
-        }
-        if (timer_fd>=0)
-        {
-            close(timer_fd);
-            timer_fd = -1;
         }
         if (signal_fd>=0)
         {
@@ -452,6 +442,7 @@ struct NativeEventLoopImpl {
         fileHandlers[fd] = null;
     }
     void start_poll(int fd, AppEvent ev, FileEventHandler f) @trusted {
+        assert(epoll_fd != -1);
         epoll_event e;
         e.events = appEventToSysEvent(ev);
         if ( ev & AppEvent.EXT_EPOLLEXCLUSIVE )
@@ -465,6 +456,7 @@ struct NativeEventLoopImpl {
     }
 
     void stop_poll(int fd, AppEvent ev) @trusted {
+        assert(epoll_fd != -1);
         epoll_event e;
         e.events = appEventToSysEvent(ev);
         e.data.fd = fd;
