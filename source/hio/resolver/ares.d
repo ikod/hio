@@ -139,7 +139,7 @@ static ~this()
         if (theResolver._cacheCleaner)
         {
             // can't call stopTimer from dtor (no nogc)
-            getDefaultLoop().stopTimer(theResolver._cacheCleaner);
+            //getDefaultLoop().stopTimer(theResolver._cacheCleaner);
             theResolver._cacheCleaner = null;
         }
         theResolver.close();
@@ -197,11 +197,11 @@ public void hio_gethostbyname6(F)(string host, F callback, ushort port=InternetA
     {
         theResolver = new Resolver();
     }
-    void cb(int s, uint[] a) @safe
+    void cb(int s, ubyte[16][] a) @safe
     {
-        InternetAddress6[] addresses;
+        Internet6Address[] addresses;
         foreach (ia; a) {
-            addresses ~= new InternetAddress6(ia, port);
+            addresses ~= new Internet6Address(ia, port);
         }
         callback(s, addresses);
     }
@@ -209,7 +209,7 @@ public void hio_gethostbyname6(F)(string host, F callback, ushort port=InternetA
     {
         theResolver._loop = getDefaultLoop();
     }
-    theResolver.gethostbyname6(host, &cb);
+    gethostbyname6(host, &cb);
 }
 
 package ResolverResult4 gethostbyname(string hostname, ushort port=InternetAddress.PORT_ANY)
@@ -1200,6 +1200,12 @@ unittest
 {
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/App   INET4 ===");
+    if ( theResolver )
+    {
+        theResolver.close();
+    }
+    theResolver = new Resolver();
+    theResolver._loop = getDefaultLoop();
     App({
         import std.array: array;
         auto resolve(string name)
@@ -1222,9 +1228,18 @@ unittest
         tasks.each!(t => t.start);
         tasks.each!(t => t.wait);
     });
+    theResolver.close();
+    theResolver = null;
 }
 unittest
 {
+    if ( theResolver )
+    {
+        theResolver.close();
+    }
+    theResolver = new Resolver();
+    theResolver._loop = getDefaultLoop();
+
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/App   INET6 ===");
     App({
@@ -1250,10 +1265,19 @@ unittest
         tasks.each!(t => t.wait);
         //tasks.each!(t => writeln(t.result.status));
     });
+    theResolver.close();
+    theResolver = null;
 }
 unittest
 {
     info("=== Testing resolver locking ===");
+    if ( theResolver )
+    {
+        theResolver.close();
+    }
+    theResolver = new Resolver();
+    theResolver._loop = getDefaultLoop();
+
     globalLogLevel = LogLevel.info;
     App({
         import std.stdio;
@@ -1275,4 +1299,6 @@ unittest
         tasks.each!(t => t.start);
         tasks.each!(t => t.wait);
     });
+    theResolver.close();
+    theResolver = null;
 }
