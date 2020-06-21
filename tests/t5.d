@@ -20,6 +20,7 @@ import std.string: fromStringz;
 import std.experimental.logger;
 import std.stdio;
 import std.array;
+import std.socket;
 import core.sys.posix.arpa.inet;
 import hio.resolver;
 import hio.scheduler;
@@ -72,24 +73,23 @@ void main()
     });
     // async/callbacks
     info("async resolving in callbacks");
-    auto resolver = theResolver;
     auto loop = getDefaultLoop();
     int  counter = 100;
     Timer t;
-    void resolve4(int status, uint[] addresses) @trusted
+    void resolve4(int status, InternetAddress[] addresses) @trusted
     {
         char[32] buf;
-        writefln("[%s]", addresses.map!htonl.map!(i => fromStringz(inet_ntop(AF_INET, &i, buf.ptr, 32))).join(", "));
+        writefln("[%s]", addresses);
         counter--;
         if ( counter == 0 )
         {
             loop.stop();
         }
     }
-    void resolve6(int status, ubyte[16][] addresses) @trusted
+    void resolve6(int status, Internet6Address[] addresses) @trusted
     {
         char[64] buf;
-        writefln("[%s]", addresses.map!(i => fromStringz(inet_ntop(AF_INET6, &i, buf.ptr, 64))).join(", "));
+        writefln("[%s]", addresses);
         counter--;
         if ( counter == 0 )
         {
@@ -98,9 +98,9 @@ void main()
     }
     void timer(AppEvent e) @safe
     {
-        resolver.gethostbyname("cloudflare.com",  loop, &resolve4);
-        resolver.gethostbyname6("cloudflare.com", loop, &resolve6);
-        resolver.gethostbyname("github.com",  loop, &resolve4);
+        hio_gethostbyname("cloudflare.com", &resolve4);
+        hio_gethostbyname6("cloudflare.com", &resolve6);
+        hio_gethostbyname("github.com", &resolve4);
         t.rearm(200.msecs);
         loop.startTimer(t);
     }
