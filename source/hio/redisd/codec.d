@@ -389,7 +389,7 @@ class Decoder {
     /// Return next value or value of type $(B Incomplete).
     RedisdValue get() @safe {
         RedisdValue v;
-    debug(redisd)writefln("on entry:\n◇\n%s\n◆", _chunks.dump());
+    // debug(redisd)writefln("on entry:\n◇\n%s\n◆", _chunks.dump());
     start:
         if (_chunks.length == 0 ) {
             return v;
@@ -404,7 +404,7 @@ class Decoder {
             if ( s[1].length ) {
                 v = to!long(s[0].data[1..$].toString);
                 _chunks = s[2];
-                debug(redisd)writefln("after:\n%s\n", _chunks.dump());
+                // debug(redisd)writefln("after:\n%s\n", _chunks.dump());
                 if (_list_len > 0) {
                     v = _handleListElement(v);
                     if (_list_len)
@@ -507,27 +507,21 @@ class Decoder {
     foreach(chunkSize; 1..b.length) {
         auto s = new Decoder();
         foreach (c; b.chunks(chunkSize)) {
-            writefln("put ◇%s◆", cast(string)c);
             s.put(NbuffChunk(c));
         }
         auto v = s.get();
-        debug(redisd)writefln("VALUE: %s", v);
         assert(v._ivar == 1001);
 
         v = s.get();
-        debug(redisd)writefln("VALUE: %s", v);
         assert(v._ivar == 1002);
 
         v = s.get();
-        debug(redisd)writefln("VALUE: %s", v);
         assert(v._svar == "abc");
 
         v = s.get();
-        debug(redisd)trace(v);
         assert(v._svar == "err");
 
         v = s.get();
-        debug(redisd)trace(v);
         assert(v._svar == "\r\nBulkString\r\n");
         v = s.get();
         debug(redisd)trace(v);
