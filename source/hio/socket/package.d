@@ -380,8 +380,11 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                         if ( rc != 0 ) {
                             throw new Exception(to!string(strerror(errno())));
                         }
-                        sockaddr_in sock_addr = {AF_INET, htons(ia.port), {htonl(ia.addr)}};
-                        rc = .bind(_fileno, cast(sockaddr*)&sock_addr, cast(uint)sock_addr.sizeof);
+                        sockaddr_in sa;
+                        sa.sin_family = AF_INET;
+                        sa.sin_port = htons(ia.port);
+                        sa.sin_addr.s_addr = htonl(ia.addr);
+                        rc = .bind(_fileno, cast(sockaddr*)&sa, cast(uint)sa.sizeof);
                         debug {
                             tracef("bind result: %d", rc);
                         }
@@ -555,7 +558,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                     uint sa_len = sin.sizeof;
                     auto rc = (() @trusted => .connect(_fileno, cast(sockaddr*)&sin, sa_len))();
                     if ( rc == -1 && errno() != EINPROGRESS ) {
-                        debug tracef("connect errno: %s", s_strerror(errno()));
+                        debug tracef("connect %s errno: %s", addr, s_strerror(errno()));
                         _connected = false;
                         _state = State.IDLE;
                         f(AppEvent.ERR|AppEvent.IMMED);
@@ -628,6 +631,10 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         version(linux)
         {
             int flags = MSG_NOSIGNAL;
+        }
+        else
+        {
+            int flags;
         }
         long r = sendmsg(_fileno, &hdr, flags);
         // long r = .writev(_fileno, &iov[0], n);
@@ -871,6 +878,10 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         version(linux)
         {
             int flags = MSG_NOSIGNAL;
+        }
+        else
+        {
+            int flags;
         }
         return .send(_fileno, data.ptr, data.length, flags);
     }
