@@ -31,7 +31,7 @@
             "debugVersions": ["hiohttp"]
         }
     ],
-    "lflags": ["-L$HIO_PACKAGE_DIR/submodules/http-parser"],
+    "lflags": ["-L$HIO_PACKAGE_DIR/submodules/http-parser", "-L/usr/local/opt/openssl@1.1/lib/"],
     "libs-posix": ["cares", "http_parser", "ssl", "crypto"]
 
 }

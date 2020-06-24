@@ -25,9 +25,20 @@ void client_task()
     while(true)
     {
         auto s = new HioSocket();
-        s.connect("127.0.0.1:12345", 1.seconds);
-        s.send("hello".representation, 1.seconds);
+        try
+        {
+            s.connect("127.0.0.1:12345", 1.seconds);
+            if (s.connected)
+            {
+                s.send("hello".representation, 1.seconds);
+            }
+        }
+        catch(Exception e)
+        {
+            errorf("%s", e.msg);
+        }
         s.close();
+        hlSleep(100.hnsecs);
     }
 }
 
@@ -42,7 +53,10 @@ void client_thread()
 void handler(HioSocket s)
 {
     auto message = s.recv(16, 200.msecs);
-    assert(message.input == "hello".representation);
+    if (!message.error && !message.timedout)
+    {
+        assert(message.input == "hello".representation);
+    }
     s.close();
 }
 
