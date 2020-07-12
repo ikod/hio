@@ -1090,7 +1090,7 @@ unittest
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/async INET4 ===");
     theResolver = new Resolver();
-    auto resolver = theResolver;
+    theResolver._loop = getDefaultLoop();
     auto app(string hostname)
     {
         int status;
@@ -1149,7 +1149,7 @@ unittest
     globalLogLevel = LogLevel.info;
     info("=== Testing resolver ares/async INET6 ===");
     theResolver = new Resolver();
-    auto resolver = theResolver;
+    theResolver._loop = getDefaultLoop();
     auto app(string hostname)
     {
         int status;
