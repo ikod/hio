@@ -84,7 +84,13 @@ enum ns_c_in = 1;
 enum ns_t_a  = 1;
 enum ns_t_aaaa = 28;
 
-extern(C)
+string resolver_errno(int r) @trusted
+{
+    import std.conv: to;
+    return to!string(ares_strerror(r));
+}
+
+private extern(C)
 {
     alias    ares_host_callback = void function(void *arg, int status, int timeouts, hostent *he);
     alias    ares_callback =      void function(void *arg, int status, int timeouts, ubyte *abuf, int alen);
@@ -362,7 +368,7 @@ in(theResolver !is null)
             return ResolverResult(status, addresses);
         }
         auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
-        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, theResolver._sockets);
         // prepare listening for socket events
         theResolver.handleGetSocks(rc, &theResolver._sockets);
         yielded = true;
@@ -521,7 +527,7 @@ in(theResolver !is null)
             return ResolverResult6(status, addresses);
         }
         auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
-        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, theResolver._sockets);
         // prepare listening for socket events
         theResolver.handleGetSocks(rc, &theResolver._sockets);
         yielded = true;
@@ -581,7 +587,7 @@ in(theResolver._loop !is null)
         ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_a, theResolver.ares_callback4, cast(void*)id);
     }();
     auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
-    debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+    debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, theResolver._sockets);
     // prepare listening for socket events
     theResolver.handleGetSocks(rc, &theResolver._sockets);
 }
@@ -735,6 +741,10 @@ package class Resolver: FileEventHandler
                     _cache6.remove(name);
                 }
             }
+
+            // handle timeouts
+            ares_process_fd(_ares_channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+
             _cacheCleaner.rearm(CleanupFrequency);
             getDefaultLoop().startTimer(_cacheCleaner);
         };
