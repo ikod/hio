@@ -168,6 +168,8 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         //     _fileno = -1;
         // }
         // close();
+        assert(_io_timer is null);
+        assert(_connect_timer is null);
     }
     
     override string toString() const @safe {
@@ -243,7 +245,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             assert(0);
         case State.CONNECTING:
             debug tracef("connection event: %s", appeventToString(e));
-            assert(e & (AppEvent.OUT|AppEvent.HUP), "We can handle only OUT event in connectiong state");
+            assert(e & (AppEvent.OUT|AppEvent.HUP), "We can handle only OUT event in connectiong state, but got %s".format(e));
             if ( e & AppEvent.OUT ) {
                 _connected = true;
             }
@@ -360,6 +362,12 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             debug tracef("also stop connect timer: %s", _connect_timer);
             _loop.stopTimer(_connect_timer);
             _connect_timer = null;
+        }
+        if ( _io_timer )
+        {
+            debug tracef("also stop io timer: %s", _io_timer);
+            _loop.stopTimer(_io_timer);
+            _io_timer = null;
         }
         _iorq = IORequest();
         _result = IOResult();
@@ -858,13 +866,20 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         _pollingFor = ev;
         assert(_pollingFor != AppEvent.NONE, "No read or write requested");
 
-        if (_io_timer) {
+        if (_io_timer && timeout<=0.seconds) {
             debug tracef("closing prev timer: %s", _io_timer);
             _loop.stopTimer(_io_timer);
+            _io_timer = null;
         }
 
         if ( timeout > 0.seconds ) {
-            _io_timer = new Timer(timeout, &io_handler);
+            if ( _io_timer )
+            {
+                _io_timer.rearm(timeout);
+            } else
+            {
+                _io_timer = new Timer(timeout, &io_handler);
+            }
             _loop.startTimer(_io_timer);
         }
         _loop.startPoll(_fileno, _pollingFor, this);
@@ -1061,7 +1076,10 @@ class HioSocket
     override string toString() {
         return _socket.toString();
     }
-
+    void bufferSize(int s)
+    {
+        _socket._buffer_size = s;
+    }
     auto fileno()
     {
         return _socket.fileno;
@@ -1198,6 +1216,40 @@ class HioSocket
         return iores;
     }
     ///
+    size_t send(ref Nbuff data, Duration timeout = 1.seconds) @trusted {
+        _fiber = Fiber.getThis();
+        IOResult ioresult;
+
+        if ( _fiber is null ) {
+            IORequest ioreq;
+            _socket.blocking = true;
+            ioreq.output = data;
+            ioresult = _socket.io(ioreq, timeout);
+            _socket.blocking = false;
+            if ( ioresult.error ) {
+                return -1;
+            }
+            return 0;
+        }
+
+        void callback(IOResult ior) @trusted {
+            ioresult = ior;
+            _fiber.call();
+        }
+        ioresult = _socket.send(getDefaultLoop(), data.data.data, timeout, &callback);
+        if ( ioresult.error ) {
+            return -1;
+        }
+        if ( ioresult.output.empty ) {
+            return data.length;
+        }
+        Fiber.yield();
+        if (ioresult.error) {
+            return -1;
+        }
+        return data.length - ioresult.output.length;
+    }
+    ///
     size_t send(immutable (ubyte)[] data, Duration timeout = 1.seconds) @trusted {
         _fiber = Fiber.getThis();
         IOResult ioresult;
@@ -1264,26 +1316,28 @@ struct LineReader
         return _buff;
     }
     /// read next line
-    auto readLine(Duration timeout = 10.seconds)
+    Nbuff readLine(Duration timeout = 10.seconds)
     {
         while(!_done)
         {
-            debug tracef("count until NL starting from %d", _last_position);
+            //debug tracef("count until NL starting from %d", _last_position);
             long p = _buff.countUntil(NL, _last_position);
             if (p>=0)
             {
-                auto line = _buff[0 .. p];
+                Nbuff line = _buff[0 .. p];
                 _last_position = 0;
-                _buff = _buff[p+1..$];
+                _buff.pop(p+1);
                 debug tracef("got line %s", line.data);
                 return line;
             }
-            p = _buff.length;
+            _last_position = _buff.length;
             auto r = _socket.recv(_buffer_size, timeout);
             if (r.timedout || r.error || r.input.length == 0) {
+                debug tracef("got terminal result %s", r);
                 _done = true;
                 return _buff;
             } else {
+                debug tracef("append %d bytes", r.input.length);
                 _buff.append(r.input, 0, r.input.length);
             }
         }
