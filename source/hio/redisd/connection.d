@@ -1,5 +1,5 @@
 ///
-module redisd.connection;
+module hio.redisd.connection;
 
 import std.algorithm;
 import std.conv;
@@ -19,52 +19,52 @@ interface Connection {
     void close();
 }
 
-alias ConnectionMaker = Connection function() @safe;
-/// std.socket transport
-class SocketConnection : Connection {
-    import std.socket;
-    private {
-        string  _host;
-        ushort  _port;
-        Socket  _socket;
-    }
+// alias ConnectionMaker = Connection function() @safe;
+// /// std.socket transport
+// class SocketConnection : Connection {
+//     import std.socket;
+//     private {
+//         string  _host;
+//         ushort  _port;
+//         Socket  _socket;
+//     }
 
-    this() @safe {
-        _socket = new Socket(AddressFamily.INET, SocketType.STREAM);
-        _socket.setOption(SocketOptionLevel.TCP, SocketOption.TCP_NODELAY, 1);
+//     this() @safe {
+//         _socket = new Socket(AddressFamily.INET, SocketType.STREAM);
+//         _socket.setOption(SocketOptionLevel.TCP, SocketOption.TCP_NODELAY, 1);
 
-    }
+//     }
 
-    override void connect(URL url) @safe {
-        string host = url.host;
-        ushort port = url.port;
-        auto addr = new InternetAddress(host, port);
-        _socket.connect(addr);
-    }
+//     override void connect(URL url) @safe {
+//         string host = url.host;
+//         ushort port = url.port;
+//         auto addr = new InternetAddress(host, port);
+//         _socket.connect(addr);
+//     }
 
-    override immutable(ubyte)[] recv(size_t to_receive) {
-        immutable(ubyte)[] result;
-        result.length = to_receive;
-        auto r = _socket.receive(cast(void[])result);
-        if ( r <= 0 ) {
-            return result[0..0];
-        }
-        return result[0..r];
-    }
+//     override immutable(ubyte)[] recv(size_t to_receive) {
+//         immutable(ubyte)[] result;
+//         result.length = to_receive;
+//         auto r = _socket.receive(cast(void[])result);
+//         if ( r <= 0 ) {
+//             return result[0..0];
+//         }
+//         return result[0..r];
+//     }
 
-    override size_t send(immutable(ubyte)[] data) {
-        return _socket.send(cast(void[])data, SocketFlags.NONE);
-    }
+//     override size_t send(immutable(ubyte)[] data) {
+//         return _socket.send(cast(void[])data, SocketFlags.NONE);
+//     }
 
-    override void close() {
-        _socket.close();
-    }
+//     override void close() {
+//         _socket.close();
+//     }
 
-}
-/// std.socket connection builder
-Connection stdConnectionMaker() @safe {
-    return new SocketConnection();
-}
+// }
+// /// std.socket connection builder
+// Connection stdConnectionMaker() @safe {
+//     return new SocketConnection();
+// }
 
 import std.datetime;
 import std.socket;
@@ -79,27 +79,38 @@ HioSocketConnection hioConnectionMaker() @safe {
 class HioSocketConnection {
     private {
         HioSocket   _socket;
+        Duration    _io_timeout = 1.seconds;
     }
 
     this() @safe {
         _socket = new HioSocket();
     }
 
+    void io_timeout(Duration t)
+    {
+        _io_timeout = t;
+    }
+
     void connect(URL url) {
         auto a = getAddressInfo(url.host, AddressFamily.INET);
-        _socket.connect("%s:%d".format(a[0].address.toAddrString, url.port), 1.seconds);
+        _socket.connect("%s:%d".format(a[0].address.toAddrString, url.port), _io_timeout);
+    }
+
+    bool connected()
+    {
+        return _socket.connected;
     }
 
     NbuffChunk recv(size_t to_receive) {
-        IOResult r = _socket.recv(to_receive);
-        if ( r.error || r.input.length == 0) {
+        IOResult r = _socket.recv(to_receive, _io_timeout);
+        if ( r.error || r.timedout || r.input.length == 0) {
             return NbuffChunk();
         }
         return r.input;
     }
 
     size_t send(immutable(ubyte)[] data) {
-        return _socket.send(data, 1.seconds);
+        return _socket.send(data, _io_timeout);
     }
 
     void close() {

@@ -1,5 +1,5 @@
 ///
-module redisd.client;
+module hio.redisd.client;
 
 import std.typecons;
 import std.stdio;
@@ -12,8 +12,8 @@ import std.traits: isSomeString;
 
 import std.experimental.logger;
 
-import redisd.connection;
-import redisd.codec;
+import hio.redisd.connection;
+import hio.redisd.codec;
 
 import hio.http.common: URL, parse_url;
 
@@ -31,14 +31,12 @@ class Client {
 
     private {
         URL                 _url;
-        ConnectionMaker     _connection_maker;
         HioSocketConnection _connection;
         Decoder             _input_stream;
     }
     /// Constructor
-    this(string url="redis://localhost:6379", ConnectionMaker connectionMaker=&stdConnectionMaker) {
+    this(string url="redis://localhost:6379") {
         _url = parse_url(url);
-        _connection_maker = connectionMaker;
         _connection = new HioSocketConnection();
         _connection.connect(_url);
         _input_stream = new Decoder();
@@ -83,7 +81,7 @@ class Client {
         _connection.send(data);
         RedisdValue[] response;
         while (response.length < commands.length) {
-            debug(redisd) tracef("response length=%d, commands.length=%d", response.length, commands.length);
+            debug(hioredis) tracef("response length=%d, commands.length=%d", response.length, commands.length);
             auto b = _connection.recv(bufferSize);
             if (b.length == 0) {
                 break;
@@ -97,7 +95,7 @@ class Client {
                 response ~= v;
                 if (v.type == ValueType.Error
                         && cast(string) v.svar[4 .. 18] == "Protocol error") {
-                    debug (redisd)
+                    debug(hioredis)
                         trace("reopen connection");
                     _connection.close();
                     reconnect();
@@ -124,7 +122,7 @@ class Client {
         }
         if (response.type == ValueType.Error && response.svar[4 .. 18] == "Protocol error") {
             _connection.close();
-            debug (redisd)
+            debug(hioredis)
                 trace("reopen connection");
             reconnect();
         }
@@ -154,7 +152,7 @@ class Client {
         if ( response.type == ValueType.Error && 
                 cast(string)response.svar[4..18] == "Protocol error") {
             _connection.close();
-            debug(redisd) trace("reopen connection");
+            debug(hioredis) trace("reopen connection");
             reconnect();
         }
         if (response.type == ValueType.Error && response.svar[0 .. 6] == "NOAUTH") {
@@ -188,14 +186,21 @@ class Client {
         if (response.type == ValueType.Error && cast(string) response.svar[4 .. 18]
                 == "Protocol error") {
             _connection.close();
-            debug (redisd)
+            debug(hioredis)
                 trace("reopen connection");
             reconnect();
         }
         return response;
     }
 
-    void close() {
+    bool connected()
+    {
+        return _connection.connected;
+    }
+
+    void close()
+    {
         _connection.close();
+        debug(hioredis) trace("connection closed");
     }
 }

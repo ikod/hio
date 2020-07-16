@@ -1,6 +1,6 @@
 ///
-module redisd;
+module hio.redisd;
 
-public import redisd.codec;
-public import redisd.connection;
-public import redisd.client;
+public import hio.redisd.codec;
+public import hio.redisd.connection;
+public import hio.redisd.client;

@@ -1,5 +1,5 @@
 ///
-module redisd.codec;
+module hio.redisd.codec;
 
 import std.string;
 import std.algorithm;
