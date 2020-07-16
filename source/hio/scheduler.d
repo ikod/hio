@@ -91,7 +91,14 @@ ReturnType!F App(F, A...) (F f, A args) {
         }
         catch (Throwable e)
         {
-            debug tracef("app throwed %s", e);
+            version(unittest)
+            {
+                debug tracef("app throwed %s", e);
+            }
+            else
+            {
+                errorf("app throwed %s", e);
+            }
             box._exception = e;
         }
         getDefaultLoop().stop();
@@ -163,14 +170,13 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     final this(F f, A args) {
         _f = f;
         _args = args;
-        _box._pair = makeSocketPair();
-        _commands = makeSocketPair();
     }
 
     override bool ready() {
         return _ready;
     }
     auto isDaemon(bool v)
+    in(_child is null) // you can't change this after thread started
     {
         _isDaemon = v;
         return this;
@@ -198,22 +204,29 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         ubyte[1] cmd = [Commands.WakeUpLoop];
         _commands.write(1, cmd);
     }
-    override bool wait(Duration timeout = Duration.max) {
+    override bool wait(Duration timeout = Duration.max)
+    in(!_isDaemon)      // this not works with daemons
+    in(_child !is null) // you can wait only for started tasks
+    {
         if (_ready) {
             if ( !_chind_joined ) {
                 _child.join();
                 _chind_joined = true;
+                _commands.close();
+                _box._pair.close();
             }
             if ( _box._exception ) {
                 throw _box._exception;
             }
             return true;
         }
-        if ( timeout <= 0.seconds ) {
+        if ( timeout <= 0.seconds )
+        {
             // this is poll
             return _ready;
         }
-        if ( timeout < Duration.max ) {
+        if ( timeout < Duration.max )
+        {
             // rize timer
             _t = new Timer(timeout, (AppEvent e) @trusted {
                 getDefaultLoop().stopPoll(_box._pair[0], AppEvent.IN);
@@ -248,11 +261,15 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         if ( _ready && !_chind_joined ) {
             _child.join();
             _chind_joined = true;
+            _commands.close();
+            _box._pair.close();
         }
         return _ready;
     }
 
-    final auto run() {
+    final auto run()
+    in(_child is null)
+    {
         class CommandsHandler : FileEventHandler
         {
             override void eventHandler(int fd, AppEvent e)
@@ -294,6 +311,11 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
             }
         );
         this._child.isDaemon = _isDaemon;
+        if ( !_isDaemon )
+        {
+            _box._pair = makeSocketPair();
+            _commands = makeSocketPair();
+        }
         this._child.start();
         return this;
     }
@@ -304,7 +326,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
 /// you can start, wait, check for readiness.
 ///
 class Task(F, A...) : Computation if (isCallable!F) {
-    enum  Void = is(ReturnType!F==void);
+    private enum  Void = is(ReturnType!F==void);
     alias start = call;
     private {
         alias R = ReturnType!F;
@@ -370,6 +392,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
     /// wait(Duration) - wait with timeout
     /// 
     override bool wait(Duration timeout = Duration.max) {
+        debug trace("enter wait");
         if ( _ready || timeout <= 0.msecs )
         {
             if ( _exception !is null ) {
@@ -440,7 +463,14 @@ class Task(F, A...) : Computation if (isCallable!F) {
                 _result = _f(_args);
             } catch(Throwable e) {
                 _exception = e;
-                debug tracef("got throwable %s", e);
+                version(unittest)
+                {
+                    debug tracef("got throwable %s", e);
+                }
+                else
+                {
+                    errorf("got throwable %s", e);
+                }
             }
             //debug tracef("run finished, result: %s, waitor: %s", _result, this._waitor);
         }
@@ -448,8 +478,12 @@ class Task(F, A...) : Computation if (isCallable!F) {
         if ( this._waitor ) {
             auto w = this._waitor;
             this._waitor = null;
-            debug tracef("wakeup waitor");
+            debug tracef("task finished, wakeup waitor");
             w.call();
+        }
+        else
+        {
+            debug tracef("task finsihed, no one to wake up");
         }
         if (fiberPoolSize < FiberPoolCapacity )
         {
@@ -802,7 +836,9 @@ auto mapMxN(F, R)(R r, F f, ulong m, ulong n) {
             map!(fiber_chunk => task(&fiberWorker, fiber_chunk)). // start fiber over each chunk
             array;
         fibers.each!"a.start";
+        debug tracef("%d tasks started", fibers.length);
         fibers.each!"a.wait";
+        debug tracef("all tasks completed");
         static if (!Void) {
             return fibers.map!"a.value".array.join;
         }
