@@ -341,9 +341,9 @@ struct NativeEventLoopImpl {
             return;
         }
 
+        // static destructors can try to stop timers after loop deinit, so we check totalTimers
         if (timingwheels.totalTimers() > 0)
         {
-            // static destructors can try to stop timers after loop deinit
             timingwheels.cancel(t);
         }
     }

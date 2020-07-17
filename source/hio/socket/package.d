@@ -659,6 +659,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             {
                 _result.input = NbuffChunk(_input, _input.length);
             }
+            _io_timer = null;
             // return timeout flag
             _result.timedout = true;
             // make callback
