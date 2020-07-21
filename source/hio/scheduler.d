@@ -818,17 +818,53 @@ unittest {
 //
 auto mapMxN(F, R)(R r, F f, ulong m, ulong n) {
     enum Void = is(ReturnType!F == void);
-
+    struct V
+    {
+        Throwable exception;
+        static if (!Void)
+        {
+            ReturnType!F    _value;
+            auto value() inout
+            {
+                check();
+                return _value;
+            }
+            alias value this;
+        }
+        void check() inout
+        {
+            if (exception)
+            {
+                throw exception;
+            }
+        }
+    }
     assert(m > 0 && n > 0 && r.length > 0, "should be m > 0 && n > 0 && r.length > 0, you have %d,%d,%d".format(m,n,r.length));
 
     m = min(m, r.length);
 
     auto fiberWorker(R fiber_chunk) {
-        static if (!Void) {
-            return fiber_chunk.map!(f).array;
-        } else {
-            fiber_chunk.each!f;
+        V[] result;
+        foreach(ref c; fiber_chunk)
+        {
+            try
+            {
+                static if (!Void)
+                {
+                    result ~= V(null, f(c));
+                }
+                else
+                {
+                    f(c);
+                    result ~= V();
+                }
+            }
+            catch(Throwable e)
+            {
+                result ~= V(e);
+            }
         }
+        return result;
     }
 
     auto threadWorker(R thread_chunk) {
@@ -837,20 +873,17 @@ auto mapMxN(F, R)(R r, F f, ulong m, ulong n) {
             array;
         fibers.each!"a.start";
         debug tracef("%d tasks started", fibers.length);
-        fibers.each!"a.wait";
-        debug tracef("all tasks completed");
-        static if (!Void) {
-            return fibers.map!"a.value".array.join;
-        }
+        auto ready = fibers.map!"a.wait".array;
+        assert(ready.all);
+        return fibers.map!"a.value".join;
     }
     auto threads = r.splitn(m). // split on M chunks
         map!(thread_chunk => threaded(&threadWorker, thread_chunk)). // start thread over each chunk
         array;
     threads.each!"a.start";
-    threads.each!"a.wait";
-    static if (!Void) {
-        return threads.map!"a.value".array.join;
-    }
+    auto ready = threads.map!"a.wait".array;
+    assert(ready.all);
+    return threads.map!"a.value".join;
 }
 
 // map array on M threads
@@ -925,7 +958,7 @@ unittest {
 
     App({
         auto r = iota(20).array.mapMxN(&f1, 2, 3);
-        assert(equal(r, iota(20).map!"a*a"));
+        assert(equal(r.map!"a.value", iota(20).map!"a*a"));
     });
 
     App({

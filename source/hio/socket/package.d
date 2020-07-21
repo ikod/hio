@@ -245,11 +245,11 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             assert(0);
         case State.CONNECTING:
             debug tracef("connection event: %s", appeventToString(e));
-            assert(e & (AppEvent.OUT|AppEvent.HUP), "We can handle only OUT event in connectiong state, but got %s".format(e));
+            assert(e & (AppEvent.OUT|AppEvent.HUP|AppEvent.HUP), "We can handle only OUT event in connectiong state, but got %s".format(e));
             if ( e & AppEvent.OUT ) {
                 _connected = true;
             }
-            if ( (e & AppEvent.HUP) ) {
+            if ( (e & (AppEvent.HUP|AppEvent.ERR)) ) {
                 int err;
                 uint err_s = err.sizeof;
                 auto rc = (() @trusted => .getsockopt(_fileno, SOL_SOCKET, SO_ERROR, &err, &err_s))();
