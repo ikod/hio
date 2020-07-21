@@ -6,18 +6,20 @@ import std.stdio;
 import std.algorithm;
 import std.range;
 import std.string;
+import std.datetime;
 
 import std.meta: allSatisfy;
 import std.traits: isSomeString;
 
 import std.experimental.logger;
 
-import hio.redisd.connection;
+import hio.socket;
+import hio.resolver;
 import hio.redisd.codec;
 
 import hio.http.common: URL, parse_url;
 
-private immutable bufferSize = 4*1024;
+private immutable bufferSize = 2*1024;
 
 ///
 class NotAuthenticated : Exception {
@@ -30,15 +32,15 @@ class NotAuthenticated : Exception {
 class Client {
 
     private {
-        URL                 _url;
-        HioSocketConnection _connection;
-        Decoder             _input_stream;
+        URL         _url;
+        HioSocket   _connection;
+        Decoder     _input_stream;
+        Duration    _timeout = 1.seconds;
     }
     /// Constructor
     this(string url="redis://localhost:6379") {
         _url = parse_url(url);
-        _connection = new HioSocketConnection();
-        _connection.connect(_url);
+        _connection = new HioSocket();
         _input_stream = new Decoder();
         if ( _url.userinfo ) {
             auto v = execCommand("AUTH", _url.userinfo[1..$]);
@@ -47,10 +49,23 @@ class Client {
             }
         }
     }
+    void connect()
+    {
+        debug(hioredis) tracef("connecting to %s:%s", _url.host, _url.port);
+        auto r = hio_gethostbyname(_url.host, _url.port);
 
+        if (r.status == ARES_SUCCESS)
+        {
+            _connection.connect(r.addresses[0], _timeout);
+        }
+    }
     private void reconnect() {
-        _connection = new HioSocketConnection();
-        _connection.connect(_url);
+        if ( _connection )
+        {
+            _connection.close();
+        }
+        _connection = new HioSocket();
+        connect();
         _input_stream = new Decoder;
         if (_url.userinfo) {
             auto auth = execCommand("AUTH", _url.userinfo[1..$]);
@@ -82,11 +97,12 @@ class Client {
         RedisdValue[] response;
         while (response.length < commands.length) {
             debug(hioredis) tracef("response length=%d, commands.length=%d", response.length, commands.length);
-            auto b = _connection.recv(bufferSize);
-            if (b.length == 0) {
+            auto r = _connection.recv(bufferSize);
+            if (r.timedout || r.error || r.input.length == 0)
+            {
                 break;
             }
-            _input_stream.put(b);
+            _input_stream.put(r.input);
             while(true) {
                 auto v = _input_stream.get();
                 if (v.type == ValueType.Incomplete) {
@@ -110,11 +126,12 @@ class Client {
         RedisdValue response;
         _connection.send(command.encode);
         while (true) {
-            auto b = _connection.recv(bufferSize);
-            if (b.length == 0) {
+            auto r = _connection.recv(bufferSize);
+            if ( r.error || r.timedout || r.input.length == 0) 
+            {
                 break;
             }
-            _input_stream.put(b);
+            _input_stream.put(r.input);
             response = _input_stream.get();
             if (response.type != ValueType.Incomplete) {
                 break;
@@ -138,11 +155,12 @@ class Client {
         RedisdValue response;
         _connection.send(request.encode);
         while(true) {
-            auto b = _connection.recv(bufferSize);
-            if ( b.length == 0 ) {
-                // error, timeout or something bad
+            auto r = _connection.recv(bufferSize);
+            if (r.error || r.timedout || r.input.length == 0)
+            {
                 break;
             }
+            auto b = r.input;
             _input_stream.put(b);
             response = _input_stream.get();
             if (response.type != ValueType.Incomplete) {
@@ -173,11 +191,12 @@ class Client {
         RedisdValue response;
         response = _input_stream.get();
         while(response.type == ValueType.Incomplete) {
-            auto b = _connection.recv(bufferSize);
-            if (b.length == 0) {
+            auto r = _connection.recv(bufferSize);
+            if ( r.error || r.timedout || r.input.length == 0)
+            {
                 break;
             }
-            _input_stream.put(b);
+            _input_stream.put(r.input);
             response = _input_stream.get();
             if (response.type != ValueType.Incomplete) {
                 break;
@@ -201,6 +220,7 @@ class Client {
     void close()
     {
         _connection.close();
+        _connection = null;
         debug(hioredis) trace("connection closed");
     }
 }
