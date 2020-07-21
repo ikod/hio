@@ -743,7 +743,10 @@ package class Resolver: FileEventHandler
             }
 
             // handle timeouts
-            ares_process_fd(_ares_channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+            if (_ares_channel !is null)
+            {
+                ares_process_fd(_ares_channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+            }
 
             _cacheCleaner.rearm(CleanupFrequency);
             getDefaultLoop().startTimer(_cacheCleaner);
@@ -759,6 +762,7 @@ package class Resolver: FileEventHandler
     {
         if (_ares_channel)
         {
+            ares_process_fd(_ares_channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
             ares_destroy(_ares_channel);
             _ares_channel = null;
         }
