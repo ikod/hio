@@ -394,7 +394,7 @@ unittest {
             tracef("server accepted on %s", s.fileno());
             IORequest iorq;
             iorq.to_read = 512;
-            iorq.callback = (IOResult r) {
+            iorq.callback = (ref IOResult r) {
                 if ( r.timedout ) {
                     s.close();
                     return;
@@ -422,7 +422,7 @@ unittest {
             tracef("send returned %d", rc);
             IORequest iorq;
             iorq.to_read = 512;
-            iorq.callback = (IOResult r) {
+            iorq.callback = (ref IOResult r) {
                 if ( r.timedout ) {
                     info("Client timeout waiting for response");
                     client.close();

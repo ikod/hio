@@ -47,7 +47,7 @@ alias SigHandlerDelegate = void delegate(int) @safe;
 alias FileHandlerFunction = void function(int, AppEvent) @safe;
 //alias NotificationHandler = void delegate(Notification) @safe;
 alias FileHandlerDelegate = void delegate(int, AppEvent) @safe;
-alias IOCallback = void delegate(IOResult) @safe;
+alias IOCallback = void delegate(ref IOResult) @safe;
 
 string appeventToString(AppEvent ev) @safe pure {
     import std.format;

@@ -595,7 +595,7 @@ struct AsyncHTTP
         }
     }
 
-    private void _receiving_response(IOResult res) @safe
+    private void _receiving_response(ref IOResult res) @safe
     {
         assert(_state == State.HEADERS_RECEIVE || _state == State.BODY_RECEIVE);
 
@@ -656,7 +656,7 @@ struct AsyncHTTP
         }
     }
 
-    private void _send_request_done(IOResult res) @safe
+    private void _send_request_done(ref IOResult res) @safe
     {
         //debug(hiohttp) tracef("result: %s", res);
         if ( res.error || res.timedout )

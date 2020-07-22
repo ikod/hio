@@ -533,7 +533,7 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
         return _so.connect(addr, loop, &so_connect_callback, timeout);
     }
 
-    int io(hlEvLoop loop, IORequest iorq, Duration timeout) @safe
+    int io(hlEvLoop loop, ref IORequest iorq, Duration timeout) @safe
     {
         assert(iorq.callback !is null);
         assert(connected);

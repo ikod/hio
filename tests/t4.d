@@ -3,7 +3,13 @@
     dflags "-I../source"
     #dflags "-fsanitize=address"
     #dflags "-debug"
-    #debugVersions "nbuff"
+    dmdflags "-check=assert=off"
+    dmdflags "-check=in=off"
+    dmdflags "-check=out=off"
+    dmdflags "-check=invariant=off"
+    dmdflags "-check=bounds=off"
+    // dflags "-profile=gc"
+    // #debugVersions "nbuff"
     #debugVersions "timingwheels"
     #debugVersions "cachetools"
     lflags "-lcares"
@@ -41,43 +47,61 @@ void server(int so)
             server_socket.accept(loop, 5.seconds, &acceptFunction);
             return;
         }
+        int requests;
+        IORequest iorq;
+        void delegate(ref IOResult) @safe ioWriteCompleted;
+        void delegate(ref IOResult) @safe ioReadCompleted;
+
         auto client_socket = cast(hlSocket)s;
-        void ioWriteCompleted(IOResult iores)
+        ioWriteCompleted = delegate void(scope ref IOResult iores) @safe
         {
             if (iores.error)
             {
-                throw new Exception("err");
+                //throw new Exception("err");
+                client_socket.close();
+                return;
             }
-            client_socket.close();
-        }
-        void ioReadCompleted(IOResult iores)
-        {
-            if ( !iores.timedout && !iores.error )
+            if (requests < 1000)
             {
-                IORequest iorq;
-                iorq.output = Nbuff("HTTP/1.0 200 OK\nContent-Type: text/plain\nContent-Length: 10\n\n0123456789");
-                iorq.callback = &ioWriteCompleted;
+                requests++;
+                iorq.to_read = 1024;
+                iorq.callback = ioReadCompleted;
                 client_socket.io(loop, iorq, 10.seconds);
             }
             else
             {
                 client_socket.close();
             }
-        }
-        IORequest iorq;
-        iorq.to_read = 64;
-        iorq.callback = &ioReadCompleted;
+        };
+
+        ioReadCompleted = delegate void(scope ref IOResult iores) @safe
+        {
+            if ( !iores.timedout && !iores.error )
+            {
+                IORequest iorq;
+                iorq.output = Nbuff("HTTP/1.0 200 OK\nContent-Type: text/plain\nContent-Length: 10\n\n0123456789");
+                iorq.callback = ioWriteCompleted;
+                client_socket.io(loop, iorq, 10.seconds);
+            }
+            else
+            {
+                client_socket.close();
+            }
+        };
+
+        iorq.to_read = 1024;
+        iorq.callback = ioReadCompleted;
         client_socket.io(loop, iorq, 10.seconds);
     }
     server_socket.accept(loop, 5.seconds, &acceptFunction);
     hlSleep(60.seconds);
 }
 
-immutable servers = 2;
+immutable servers = 7;
 
 void main()
 {
-    globalLogLevel = LogLevel.trace;
+    globalLogLevel = LogLevel.info;
     auto server_socket = new HioSocket();
     server_socket.bind("0.0.0.0:12345");
     server_socket.listen(1024);
