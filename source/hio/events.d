@@ -13,17 +13,18 @@ import hio.common;
 import nbuff;
 
 enum AppEvent : int {
-    NONE = 0x00,
-    IN   = 0x01,
-    OUT  = 0x02,
-    ERR  = 0x04,
-    CONN = 0x08,
-    HUP  = 0x10,
-    TMO  = 0x20,
-    USER = 0x40,
-    IMMED= 0x80,
-    ALL  = 0xff,
-    EXT_EPOLLEXCLUSIVE = 0x100, // linux/epoll specific 
+    NONE =               0x0000,
+    IN   =               0x0001,
+    OUT  =               0x0002,
+    ERR  =               0x0004,
+    CONN =               0x0008,
+    HUP  =               0x0010,
+    TMO  =               0x0020,
+    USER =               0x0040,
+    IMMED=               0x0080,
+    SHUTDOWN =           0x0100,
+    EXT_EPOLLEXCLUSIVE = 0x1000, // linux/epoll specific 
+    ALL  =               0x0fff,
 }
 private immutable string[int] _names;
 
@@ -38,6 +39,7 @@ shared static this() {
        32:"TMO",
        64:"USER",
        0x80:"IMMED",
+       0x100:"SHUTDOWN",
     ];
 }
 
@@ -55,7 +57,7 @@ string appeventToString(AppEvent ev) @safe pure {
 
     string[] a;
     with(AppEvent) {
-        foreach(e; [IN,OUT,ERR,CONN,HUP,TMO]) {
+        foreach(e; [IN,OUT,ERR,CONN,HUP,TMO,SHUTDOWN]) {
             if ( ev & e ) {
                 a ~= _names[e];
             }
@@ -64,6 +66,12 @@ string appeventToString(AppEvent ev) @safe pure {
     return a.join("|");
 }
 
+class LoopShutdownException: Exception
+{
+    this(string msg, string file = __FILE__, size_t line = __LINE__) @safe {
+        super(msg, file, line);
+    }
+}
 class NotFoundException : Exception {
     this(string msg, string file = __FILE__, size_t line = __LINE__) @safe {
         super(msg, file, line);
