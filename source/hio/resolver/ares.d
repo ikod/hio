@@ -580,7 +580,7 @@ in(theResolver._loop !is null)
     }
     else
     {
-        _cb4f[id] = Callback4InfoF(hostname, cb);
+        theResolver._cb4f[id] = Callback4InfoF(hostname, cb);
     }
     // request for A records
     () @trusted {
@@ -627,7 +627,7 @@ in(theResolver._loop !is null)
         ares_query(theResolver._ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, theResolver.ares_callback6, cast(void*)id);
     }();
     auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
-    debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+    debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, theResolver._sockets);
     // prepare listening for socket events
     theResolver.handleGetSocks(rc, &theResolver._sockets);
 }
@@ -723,6 +723,11 @@ package class Resolver: FileEventHandler
         assert(init_res == ARES_SUCCESS, "Can't initialise ares.");
         _cacheTimerHandler = (AppEvent e)
         {
+            debug(hioresolve) tracef("got %s", e);
+            if (e & AppEvent.SHUTDOWN)
+            {
+                return;
+            }
             debug(hioresolve) trace("run dns cache cleanup");
             auto now = Clock.currStdTime;
             foreach(name, dnsCacheEntry; _cache.byPair())
@@ -815,6 +820,10 @@ package class Resolver: FileEventHandler
     //
     override void eventHandler(int f, AppEvent ev)
     {
+        if ( ev & AppEvent.SHUTDOWN)
+        {
+            throw new LoopShutdownException("shutdown loop received");
+        }
         debug(hioresolve) tracef("handler: %d, %s", f, ev);
         int socket_index;
         ares_socket_t rs = ARES_SOCKET_BAD, ws = ARES_SOCKET_BAD;
@@ -839,12 +848,14 @@ package class Resolver: FileEventHandler
         if (ev & AppEvent.OUT)
         {
             _loop.stopPoll(f, AppEvent.OUT);
+            _loop.detach(f);
             _in_write[socket_index] = false;
             ws = f;
         }
         if (ev & AppEvent.IN)
         {
             _loop.stopPoll(f, AppEvent.IN);
+            _loop.detach(f);
             _in_read[socket_index] = false;
             rs = f;
         }
@@ -914,6 +925,7 @@ package class Resolver: FileEventHandler
             d.value.callback(status, cache_entry._addresses);
             return;
         }
+        errorf("impossible on s:\"%s\" t:%d, id: %d", fromStringz(ares_strerror(status)), timeouts, id);
         assert(0);
     };
     private ares_callback ares_callback6 = (void *arg, int status, int timeouts, ubyte *abuf, int alen)
