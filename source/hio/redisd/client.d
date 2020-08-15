@@ -153,6 +153,7 @@ class Client {
         immutable(ubyte)[][] data;
         RedisdValue request = makeCommand(args);
         RedisdValue response;
+        debug(hioredis) tracef("send request %s", request);
         _connection.send(request.encode);
         while(true) {
             auto r = _connection.recv(bufferSize);
@@ -176,6 +177,7 @@ class Client {
         if (response.type == ValueType.Error && response.svar[0 .. 6] == "NOAUTH") {
             throw new NotAuthenticated("Auth required");
         }
+        debug(hioredis) tracef("got response %s", response);
         return response;
     }
     /// Simple key/value set
