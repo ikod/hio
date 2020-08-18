@@ -84,6 +84,7 @@ final class hlEvLoop {
     public:
         void delegate(scope Duration = Duration.max)       run;
         @safe void delegate()                              stop;
+        @safe void delegate()                              shutdown;
         @safe void delegate(Timer)                         startTimer;
         @safe void delegate(Timer)                         stopTimer;
         void delegate(Signal)                              startSignal;
@@ -109,6 +110,7 @@ final class hlEvLoop {
                 _nimpl.initialize();
                 run = &_nimpl.run;
                 stop = &_nimpl.stop;
+                shutdown = &_nimpl.shutdown;
                 startTimer = &_nimpl.start_timer;
                 stopTimer = &_nimpl.stop_timer;
                 startSignal = &_nimpl.start_signal;
@@ -127,6 +129,7 @@ final class hlEvLoop {
                 _fimpl.initialize();
                 run = &_fimpl.run;
                 stop = &_fimpl.stop;
+                shutdown = &_nimpl.shutdown;
                 startTimer = &_fimpl.start_timer;
                 stopTimer = &_fimpl.stop_timer;
                 startSignal = &_fimpl.start_signal;

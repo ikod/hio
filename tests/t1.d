@@ -33,7 +33,7 @@ void main()
             "altavista.com",
             "github.com",
             "ok.some.domains.are.fake",
-            ".... - some incorrecr",
+            ".... - some incorrect name",
         ];
         auto resolve(string host)
         {

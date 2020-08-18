@@ -47,13 +47,23 @@ void hlSleep(Duration d) {
     }
     auto tid = Fiber.getThis();
     assert(tid !is null);
+    bool shutdown;
     auto callback = delegate void (AppEvent e) @trusted
     {
+        debug tracef("got event %s while sleeping", e);
+        if ( e & AppEvent.SHUTDOWN)
+        {
+            shutdown = true;
+        }
         tid.call(Fiber.Rethrow.no);
     };
     auto t = new Timer(d, callback);
     getDefaultLoop().startTimer(t);
     Fiber.yield();
+    if (shutdown)
+    {
+        throw new LoopShutdownException("got loop shutdown");
+    }
 }
 
 struct Box(T) {
@@ -63,7 +73,7 @@ struct Box(T) {
     static if (!Void) {
         T   _data;
     }
-    SocketPair          _pair;
+    SocketPair  _pair;
     Throwable   _exception;
     @disable this(this);
 }
@@ -104,26 +114,38 @@ ReturnType!F App(F, A...) (F f, A args) {
         getDefaultLoop().stop();
     }
 
-    shared void delegate() run = () {
-        //
-        // in the child thread:
-        // 1. start new fiber (task over wrapper) with user supplied function
-        // 2. start event loop forewer
-        // 3. when eventLoop done(stopped inside from wrapper) the task will finish
-        // 4. store value in box and use socketpair to send signal to caller thread
-        //
-        auto t = task(&_wrapper);
-        auto e = t.start(Fiber.Rethrow.no);
-        if ( box._exception is null ) { // box.exception can be filled before Fiber start
-            box._exception = e;
-        }
-        getDefaultLoop.run(Duration.max);
-        //t.reset();
-    };
+    // shared void delegate() run = () {
+    //     //
+    //     // in the child thread:
+    //     // 1. start new fiber (task over wrapper) with user supplied function
+    //     // 2. start event loop forewer
+    //     // 3. when eventLoop done(stopped inside from wrapper) the task will finish
+    //     // 4. store value in box and use socketpair to send signal to caller thread
+    //     //
+    //     auto t = task(&_wrapper);
+    //     auto e = t.start(Fiber.Rethrow.no);
+    //     if ( box._exception is null ) { // box.exception can be filled before Fiber start
+    //         box._exception = e;
+    //     }
+    //     getDefaultLoop.run(Duration.max);
+    //     //t.reset();
+    // };
     // Thread child = new Thread(run);
     // child.start();
     // child.join();
-    run();
+    //run();
+    auto t = task(&_wrapper);
+    auto e = t.start(Fiber.Rethrow.no);
+    if ( !box._exception )
+    {
+        // box.exception can be filled before Fiber start
+        box._exception = e;
+    }
+    if ( !box._exception)
+    {
+        // if we started ok - run loop
+        getDefaultLoop.run(Duration.max);
+    }
     if (box._exception)
     {
         throw box._exception;
@@ -147,7 +169,8 @@ interface Computation {
 enum Commands
 {
     StopLoop,
-    WakeUpLoop
+    WakeUpLoop,
+    ShutdownLoop,
 }
 ///
 class Threaded(F, A...) : Computation if (isCallable!F) {
@@ -159,7 +182,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         A           _args;
         bool        _ready = false;
         Thread      _child;
-        bool        _chind_joined; // did we called _child.join?
+        bool        _child_joined; // did we called _child.join?
         Fiber       _parent;
         Box!R       _box;
         Timer       _t;
@@ -204,14 +227,20 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         ubyte[1] cmd = [Commands.WakeUpLoop];
         _commands.write(1, cmd);
     }
+    void shutdownThreadLoop()
+    {
+        debug tracef("shutdown loop in thread");
+        ubyte[1] cmd = [Commands.ShutdownLoop];
+        _commands.write(1, cmd);
+    }
     override bool wait(Duration timeout = Duration.max)
     in(!_isDaemon)      // this not works with daemons
     in(_child !is null) // you can wait only for started tasks
     {
         if (_ready) {
-            if ( !_chind_joined ) {
+            if ( !_child_joined ) {
                 _child.join();
-                _chind_joined = true;
+                _child_joined = true;
                 _commands.close();
                 _box._pair.close();
             }
@@ -243,6 +272,7 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
             {
                 _box._pair.read(0, 1);
                 getDefaultLoop().stopPoll(_box._pair[0], AppEvent.IN);
+                getDefaultLoop().detach(_box._pair[0]);
                 debug tracef("threaded done");
                 if ( _t ) {
                     getDefaultLoop.stopTimer(_t);
@@ -258,9 +288,9 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         getDefaultLoop().startPoll(_box._pair[0], AppEvent.IN, new ThreadEventHandler());
         Fiber.yield();
         debug tracef("wait done");
-        if ( _ready && !_chind_joined ) {
+        if ( _ready && !_child_joined ) {
             _child.join();
-            _chind_joined = true;
+            _child_joined = true;
             _commands.close();
             _box._pair.close();
         }
@@ -275,6 +305,11 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
             override void eventHandler(int fd, AppEvent e)
             {
                 assert(fd == _commands[0]);
+                if ( e & AppEvent.SHUTDOWN)
+                {
+                    // just ignore
+                    return;
+                }
                 auto b = _commands.read(0, 1);
                 final switch(b[0])
                 {
@@ -284,6 +319,10 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
                         break;
                     case Commands.WakeUpLoop:
                         debug safe_tracef("got WakeUpLoop command");
+                        break;
+                    case Commands.ShutdownLoop:
+                        debug tracef("got Shutdown command");
+                        getDefaultLoop.shutdown();
                         break;
                 }
             }
@@ -334,6 +373,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
         F            _f;
         A            _args;
         bool         _ready;
+        bool         _daemon;
         // Notification _done;
         Fiber        _waitor;
         Throwable    _exception;
@@ -372,6 +412,10 @@ class Task(F, A...) : Computation if (isCallable!F) {
     {
         return _executor.call(r);
     }
+    void daemon(bool v)
+    {
+        _daemon = v;
+    }
     void start() @trusted
     {
         _executor.call();
@@ -393,6 +437,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
     /// 
     override bool wait(Duration timeout = Duration.max) {
         debug trace("enter wait");
+        assert(!_daemon);
         if ( _ready || timeout <= 0.msecs )
         {
             if ( _exception !is null ) {
@@ -403,12 +448,29 @@ class Task(F, A...) : Computation if (isCallable!F) {
         assert(this._waitor is null, "You can't wait twice");
         this._waitor = Fiber.getThis();
         assert(_waitor !is null, "You can wait task only from another task or fiber");
-        Timer t = new Timer(timeout, (AppEvent e) @trusted {
-            auto w = _waitor;
-            _waitor = null;
-            w.call(Fiber.Rethrow.no);
-        });
-        getDefaultLoop().startTimer(t);
+        Timer t;
+        if ( timeout < Duration.max) 
+        {
+
+           t = new Timer(timeout, (AppEvent e) @trusted {
+                debug tracef("Event %s on 'wait' timer", e);
+                if (_waitor)
+                {
+                    auto w = _waitor;
+                    _waitor = null;
+                    w.call(Fiber.Rethrow.no);
+                }
+            });
+            try
+            {
+                getDefaultLoop().startTimer(t);
+            }
+            catch(LoopShutdownException e)
+            {
+                // this can happens if we are in shutdown process
+                t = null;
+            }
+        }
         debug tracef("yeilding task");
         Fiber.yield();
         debug tracef("wait continue, task state %s", _executor.state);
@@ -453,7 +515,14 @@ class Task(F, A...) : Computation if (isCallable!F) {
                 _f(_args);
             } catch (Throwable e) {
                 _exception = e;
-                debug tracef("got throwable %s", e);
+                version(unittest)
+                {
+                    debug tracef("got throwable %s", e);
+                }
+                else
+                {
+                    errorf("got throwable %s", e);
+                }
             }
             //debug tracef("run void finished, waitors: %s", this._waitor);
         }
@@ -475,7 +544,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
             //debug tracef("run finished, result: %s, waitor: %s", _result, this._waitor);
         }
         this._ready = true;
-        if ( this._waitor ) {
+        if ( !_daemon && this._waitor ) {
             auto w = this._waitor;
             this._waitor = null;
             debug tracef("task finished, wakeup waitor");
@@ -484,6 +553,11 @@ class Task(F, A...) : Computation if (isCallable!F) {
         else
         {
             debug tracef("task finsihed, no one to wake up");
+        }
+        if ( _daemon )
+        {
+            Fiber.getThis.reset();
+            return;
         }
         if (fiberPoolSize < FiberPoolCapacity )
         {
@@ -881,9 +955,15 @@ auto mapMxN(F, R)(R r, F f, ulong m, ulong n) {
         map!(thread_chunk => threaded(&threadWorker, thread_chunk)). // start thread over each chunk
         array;
     threads.each!"a.start";
-    auto ready = threads.map!"a.wait".array;
-    assert(ready.all);
-    return threads.map!"a.value".join;
+    debug tracef("threads started");
+    threads.each!"a.wait";
+    debug tracef("threads finished");
+    static if (!Void) {
+        return threads.map!"a.value".array.join;
+    }
+    // auto ready = threads.map!"a.wait".array;
+    // assert(ready.all);
+    // return threads.map!"a.value".join;
 }
 
 // map array on M threads
@@ -944,24 +1024,6 @@ unittest {
     }
 
     App({
-        // woid function, updates shared counter
-        iota(20).array.mapMxN(&f0, 2, 3);
-        assert(cnt == 190);
-    });
-
-    cnt = 0;
-    App({
-        // woid function, updates shared counter
-        iota(20).array.mapM(&f0, 5);
-        assert(cnt == 190);
-    });
-
-    App({
-        auto r = iota(20).array.mapMxN(&f1, 2, 3);
-        assert(equal(r.map!"a.value", iota(20).map!"a*a"));
-    });
-
-    App({
         auto r = iota(20).array.mapM(&f1, 5);
         assert(equal(r, iota(20).map!"a*a"));
     });
@@ -970,4 +1032,54 @@ unittest {
         auto r = iota(20).array.mapM(&f2, 5);
         assert(equal(r, iota(20).map!"[a, a+1]"));
     });
+
+    App({
+        // woid function, updates shared counter
+        iota(20).array.mapM(&f0, 5);
+        assert(cnt == 190);
+    });
+
+    cnt = 0;
+    App({
+        // woid function, updates shared counter
+        iota(20).array.mapMxN(&f0, 2, 3);
+        assert(cnt == 190);
+    });
+
+    App({
+        auto r = iota(20).array.mapMxN(&f1, 1, 1);
+        assert(equal(r.map!"a.value", iota(20).map!"a*a"));
+    });
+}
+unittest
+{
+    globalLogLevel = LogLevel.info;
+    // test shutdown
+    App({
+        void a()
+        {
+            hlSleep(100.msecs);
+            getDefaultLoop.shutdown();
+        }
+        void b()
+        {
+            try
+            {
+                hlSleep(1.seconds);
+                assert(0, "have to be interrupted");
+            }
+            catch (LoopShutdownException e)
+            {
+                debug tracef("got what expected");
+            }
+        }
+        auto ta = task(&a);
+        auto tb = task(&b);
+        ta.start();
+        tb.start();
+        ta.wait();
+        tb.wait();
+    });
+    uninitializeLoops();
+    globalLogLevel = LogLevel.info;
 }

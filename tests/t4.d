@@ -97,7 +97,7 @@ void server(int so)
     hlSleep(60.seconds);
 }
 
-immutable servers = 7;
+immutable servers = 4;
 
 void main()
 {

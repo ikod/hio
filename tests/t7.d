@@ -66,7 +66,7 @@ void scrape(string host)
     ulong bytes;
     hlEvLoop loop = getDefaultLoop();
 
-    void io_callback(IOResult r) @safe
+    void io_callback(ref IOResult r) @safe
     {
         bytes += r.input.length;
         if (r.timedout || r.error)
@@ -105,7 +105,7 @@ void scrape(string host)
     }
     catch(std.socket.AddressException e)
     {
-        info("socket exception %s", e);
+        infof("socket exception %s", e);
         return;
     }
     s = new AsyncSSLSocket();

@@ -6,6 +6,7 @@
     buildRequirements "allowWarnings"
     dependency "hio" version="*"
     dependency "nbuff" version="*"
+#    debugVersions "hiosocket"
 +/
 
 module tests.t3;
@@ -50,7 +51,10 @@ void handler(HioSocket s)
             errorf("Timeout waiting for request");
             return;
         }
-        assert(message.input.length>0, "empty buffer");
+        if (message.input.length == 0)
+        {
+            break;
+        }
         buffer.append(message.input);
         p = buffer.countUntil("\n\n".representation, scanned);
         if (p>=0)
@@ -92,7 +96,7 @@ void server(int so, int n)
     }
 }
 
-enum servers = 2;
+enum servers = 4;
 
 void main()
 {

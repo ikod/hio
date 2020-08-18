@@ -19,6 +19,7 @@ import core.memory: GC;
 import std.algorithm.comparison: max;
 import core.stdc.string: strerror;
 import core.stdc.errno: errno, EAGAIN, EINTR;
+import core.stdc.stdio: printf;
 
 import core.sys.linux.epoll;
 import core.sys.linux.timerfd;
@@ -43,7 +44,9 @@ struct NativeEventLoopImpl {
     immutable string _name = "epoll";
     private {
         bool                    stopped = false;
+        bool                    inshutdown = false;
         enum                    MAXEVENTS = 1024;
+        enum                    TOTAL_FILE_HANDLERS = 16*1024;
         int                     epoll_fd = -1;
         int                     signal_fd = -1;
         sigset_t                mask;
@@ -65,12 +68,11 @@ struct NativeEventLoopImpl {
 
     }
     @disable this(this) {}
-
     void initialize() @trusted nothrow {
         if ( epoll_fd == -1 ) {
             epoll_fd = (() @trusted  => epoll_create(MAXEVENTS))();
         }
-        fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
+        fileHandlers = Mallocator.instance.makeArray!FileEventHandler(TOTAL_FILE_HANDLERS);
         GC.addRange(&fileHandlers[0], fileHandlers.length * FileEventHandler.sizeof);
         timingwheels.init();
     }
@@ -114,19 +116,69 @@ struct NativeEventLoopImpl {
     }
     private void execute_overdue_timers()
     {
+        debug(hioepoll) tracef("calling overdue timers");
         while (overdue.length > 0)
         {
             // execute timers which user requested with negative delay
             Timer t = overdue[0];
             overdue = overdue[1..$];
-            debug(hioepoll) safe_tracef("execute overdue %s", t);
+            debug(hioepoll) tracef("execute overdue %s", t);
             HandlerDelegate h = t._handler;
             try {
-                h(AppEvent.TMO);
+                if (inshutdown)
+                {
+                    h(AppEvent.SHUTDOWN);
+                }
+                else
+                {
+                    h(AppEvent.TMO);
+                }
             } catch (Exception e) {
                 errorf("Uncaught exception: %s", e);
             }
         }
+    }
+
+    void shutdown() @safe
+    in(!stopped && !inshutdown)
+    {
+        // scan through all timers
+        auto a = timingwheels.allTimers();
+        foreach(t; a.timers)
+        {
+            try
+            {
+                debug(hioepoll) tracef("send shutdown to timer %s", t);
+                t._handler(AppEvent.SHUTDOWN);
+            }
+            catch(Exception e)
+            {
+                errorf("Error on event SHUTDOWN in %s", t);
+            }
+        }
+        // scan through active file descriptors
+        // and send SHUTDOWN event
+        if (fileHandlers is null)
+        {
+            return;
+        }
+        for(int i=0;i<TOTAL_FILE_HANDLERS;i++)
+        {
+            if (fileHandlers[i] is null)
+            {
+                continue;
+            }
+            try
+            {
+                debug(hioepoll) tracef("send shutdown to filehandler %s", fileHandlers[i]);
+                fileHandlers[i].eventHandler(i, AppEvent.SHUTDOWN);
+            }
+            catch(Exception e)
+            {
+                () @trusted {printf("exception: %s:%d: %s", __FILE__.ptr, __LINE__, toStringz(e.toString));}();
+            }
+        }
+        inshutdown = true;
     }
     /**
     *
@@ -175,6 +227,7 @@ struct NativeEventLoopImpl {
             debug(hioepoll) tracef("events: %s", events[0..ready]);
             foreach(i; 0..ready) {
                 auto e = events[i];
+                //debug printf("epoll wait: fd:%d: 0x%0x\n", e.data.fd, e.events);
                 debug(hioepoll) tracef("got event %s", e);
                 int fd = e.data.fd;
 
@@ -252,6 +305,7 @@ struct NativeEventLoopImpl {
                 advancedTimersHash = timingwheels.advance(toCatchUp);
                 if (advancedTimersHash.length < InExpTimersSize)
                 {
+                    debug(hioepoll) tracef("calling timers");
                     //
                     // this case happens most of the time - low number of timers per tick
                     // save expired timers into small array.
@@ -281,6 +335,7 @@ struct NativeEventLoopImpl {
                 }
                 else
                 {
+                    debug(hioepoll) tracef("calling timers");
                     advancedTimersHashLength = advancedTimersHash.length;
                     foreach (t; advancedTimersHash.timers)
                     {
@@ -307,6 +362,10 @@ struct NativeEventLoopImpl {
     }
     void start_timer(Timer t) @safe {
         debug(hioepoll) safe_tracef("insert timer: %s", t);
+        if ( inshutdown)
+        {
+            throw new LoopShutdownException("starting timer");
+        }
         auto now = Clock.currTime;
         auto d = t._expires - now;
         d = max(d, 0.seconds);
@@ -443,6 +502,13 @@ struct NativeEventLoopImpl {
     }
     void start_poll(int fd, AppEvent ev, FileEventHandler f) @trusted {
         assert(epoll_fd != -1);
+        debug(hioepoll) tracef("start poll for %s on fd: %s (inshutdown: %s)", ev, fd, inshutdown);
+        if ( inshutdown )
+        {
+            //throw new LoopShutdownException("start polling");
+            f.eventHandler(fd, AppEvent.SHUTDOWN);
+            return;
+        }
         epoll_event e;
         e.events = appEventToSysEvent(ev);
         if ( ev & AppEvent.EXT_EPOLLEXCLUSIVE )
@@ -450,6 +516,7 @@ struct NativeEventLoopImpl {
             e.events |= EPOLLEXCLUSIVE;
         }
         e.data.fd = fd;
+        //debug printf("epoll ctl: fd:%d: 0x%0x\n", e.data.fd, e.events);
         auto rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &e);
         enforce(rc >= 0, "epoll_ctl add(%d, %s): %s".format(fd, e, fromStringz(strerror(errno))));
         fileHandlers[fd] = f;

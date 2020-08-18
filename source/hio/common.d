@@ -2,6 +2,8 @@ module hio.common;
 
 import std.exception;
 import std.conv;
+import std.format;
+
 import core.stdc.string: strerror;
 import std.experimental.logger;
 
@@ -56,7 +58,7 @@ struct SocketPair {
         }
         ubyte[] b = new ubyte[](len);
         auto s = (() @trusted => core.sys.posix.unistd.read(_pair[i], b.ptr, len))();
-        enforce!Exception(s > 0, "failed to read from socketpair");
+        enforce!Exception(s > 0, "failed to read from socketpair[%d], fd=%d".format(i, _pair[i]));
         return b;
     }
     auto write(uint i, ubyte[] b) @safe {

@@ -12,7 +12,7 @@
     "dependencies": {
         "nbuff": "~>0.1",
         "timingwheels": "~>0",
-	"ikod-containers": "~>0"
+	    "ikod-containers": "~>0"
     },
     "buildTypes": {
         "release": {
@@ -28,7 +28,7 @@
         {
             "name": "unittest",
 	    "versions": ["openssl11"],
-            "debugVersions": ["hiohttp"]
+            "debugVersions": []
         }
     ],
     "lflags": ["-L$HIO_PACKAGE_DIR/submodules/http-parser", "-L/usr/local/opt/openssl@1.1/lib/"],
