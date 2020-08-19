@@ -832,6 +832,11 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             }
             while(rc > 0 && _result.output.length > 0);
             assert(rc != 0);
+            if ( rc < 0 && errno() == EAGAIN )
+            {
+                // can't send right now, just retry, wait for next event
+                return;
+            }
             if ( rc < 0 ) {
                 // error sending
                 _loop.stopPoll(_fileno, _pollingFor);
