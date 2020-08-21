@@ -367,6 +367,11 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
 class Task(F, A...) : Computation if (isCallable!F) {
     private enum  Void = is(ReturnType!F==void);
     alias start = call;
+    debug private
+    {
+        static ulong task_id;
+        ulong        _task_id;
+    }
     private {
         alias R = ReturnType!F;
 
@@ -405,6 +410,11 @@ class Task(F, A...) : Computation if (isCallable!F) {
             () @trusted {
                 _executor = new Fiber(&run, TASK_STACK_SIZE);
             }();
+        }
+        debug
+        {
+            _task_id = task_id++;
+            debug tracef("t:%0X task %s created", Thread.getThis.id, _task_id);
         }
         //super(&run);
     }
@@ -547,12 +557,12 @@ class Task(F, A...) : Computation if (isCallable!F) {
         if ( !_daemon && this._waitor ) {
             auto w = this._waitor;
             this._waitor = null;
-            debug tracef("task finished, wakeup waitor");
+            debug tracef("t:%0X task %s finished, wakeup waitor", Thread.getThis.id, _task_id);
             w.call();
         }
         else
         {
-            debug tracef("task finsihed, no one to wake up");
+            debug tracef("t:%0X task %s finsihed, no one to wake up(isdaemon=%s)", Thread.getThis.id, _task_id, _daemon);
         }
         if ( _daemon )
         {
