@@ -1219,6 +1219,11 @@ class HioSocket
         _fiber = Fiber.getThis();
         void callback(AppEvent e) {
             if (!(e & AppEvent.IMMED)) {
+                if ( e & AppEvent.TMO )
+                {
+                    // timedout;
+                    _socket._errno = ETIMEDOUT;
+                }
                 (() @trusted { _fiber.call(); })();
             }
         }
@@ -1258,6 +1263,11 @@ class HioSocket
         void callback(AppEvent e) {
             if ( !(e & AppEvent.IMMED) ) {
                 // we called yield
+                if ( e & AppEvent.TMO )
+                {
+                    // timedout;
+                    _socket._errno = ETIMEDOUT;
+                }
                 (() @trusted { _fiber.call(); })();
             }
         }
@@ -1277,6 +1287,10 @@ class HioSocket
     ///
     bool connected() const @safe {
         return _socket.connected;
+    }
+    auto strerror()
+    {
+        return s_strerror(errno());
     }
     ///
     auto errno() @safe {

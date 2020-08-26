@@ -49,6 +49,15 @@ class Client {
             }
         }
     }
+    auto strerror()
+    {
+        return _connection.strerror();
+    }
+    auto errno()
+    {
+        return _connection.errno();
+    }
+
     void connect()
     {
         debug(hioredis) tracef("connecting to %s:%s", _url.host, _url.port);
