@@ -390,7 +390,10 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         }
         _fileno = socket(_af, _sock_type, 0);
         if ( _fileno < 0 )
+        {
+            _errno = errno();
             return false;
+        }
         debug(hiosocket) tracef("new socket created, %s", this);
         _polling = AppEvent.NONE;
         //fd2so[_fileno] = this;
@@ -642,6 +645,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                         debug(hiosocket) tracef("connect %s errno: %s", addr, s_strerror(errno()));
                         _connected = false;
                         _state = State.IDLE;
+                        _errno = errno();
                         f(AppEvent.ERR|AppEvent.IMMED);
                         return false;
                     }
@@ -679,6 +683,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 if (rc == -1 && errno() != EINPROGRESS) {
                     debug(hiosocket) tracef("connect to %s errno: %s", addr, s_strerror(errno()));
                     _connected = false;
+                    _errno = errno();
                     _state = State.IDLE;
                     f(AppEvent.ERR | AppEvent.IMMED);
                     return false;
@@ -1170,7 +1175,10 @@ class HioSocket
     }
     this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) @safe {
         _socket = new hlSocket(af, sock_type, f, l);
-        _socket.open();
+        if ( _socket.open() == false )
+        {
+            throw new SocketException("Can't open socket: %s", s_strerror(_socket._errno));
+        }
     }
 
     this(int fileno, ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) {
