@@ -968,9 +968,7 @@ auto mapMxN(F, R)(R r, F f, ulong m, ulong n) {
     debug tracef("threads started");
     threads.each!"a.wait";
     debug tracef("threads finished");
-    static if (!Void) {
-        return threads.map!"a.value".array.join;
-    }
+    return threads.map!"a.value".array.join;
     // auto ready = threads.map!"a.wait".array;
     // assert(ready.all);
     // return threads.map!"a.value".join;
