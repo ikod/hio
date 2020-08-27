@@ -1177,7 +1177,7 @@ class HioSocket
         _socket = new hlSocket(af, sock_type, f, l);
         if ( _socket.open() == false )
         {
-            throw new SocketException("Can't open socket: %s", s_strerror(_socket._errno));
+            throw new SocketException("Can't open socket: %s".format(s_strerror(_socket._errno)));
         }
     }
 
@@ -1246,6 +1246,10 @@ class HioSocket
         }
         if ( _socket._errno == ECONNREFUSED ) {
             throw new ConnectionRefused("Unable to connect socket: connection refused on %s".format(addr));
+        }
+        if ( ! _socket.connected )
+        {
+            throw new SocketException("failed to connect to %s: %s".format(addr, s_strerror(_socket._errno)));
         }
     }
     ///
