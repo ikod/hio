@@ -81,8 +81,9 @@ struct NativeEventLoopImpl {
     @disable this(this) {}
     private {
         bool stopped = false;
+        bool inshutdown = false;
         enum MAXEVENTS = 512;
-
+        enum TOTAL_FILE_HANDLERS = 16*1024;
         int  kqueue_fd = -1;  // interface to kernel
         int  in_index;
         int  ready;
@@ -107,7 +108,7 @@ struct NativeEventLoopImpl {
             kqueue_fd = kqueue();
         }
         debug(hiokqueue) safe_tracef("kqueue_fd=%d", kqueue_fd);
-        fileHandlers = Mallocator.instance.makeArray!FileEventHandler(16*1024);
+        fileHandlers = Mallocator.instance.makeArray!FileEventHandler(TOTAL_FILE_HANDLERS);
         GC.addRange(fileHandlers.ptr, fileHandlers.length*FileEventHandler.sizeof);
         timingwheels.init();
     }
@@ -151,22 +152,71 @@ struct NativeEventLoopImpl {
 
     private void execute_overdue_timers() @safe
     {
-        while (overdue.length > 0)
+        int limit = 100;
+        while (overdue.length > 0 && --limit > 0 )
         {
             // execute timers which user requested with negative delay
             Timer t = overdue[0];
             overdue = overdue[1..$];
-            debug(hioepoll) safe_tracef("execute overdue %s", t);
+            debug(hiokqueue) tracef("execute overdue %s", t);
             HandlerDelegate h = t._handler;
             try {
-                h(AppEvent.TMO);
+                if (inshutdown)
+                {
+                    h(AppEvent.SHUTDOWN);
+                }
+                else
+                {
+                    h(AppEvent.TMO);
+                }
             } catch (Exception e) {
-                throw e;
-                //errorf("Uncaught exception: %s", e);
+                import core.stdc.stdio: stderr, fprintf;
+                () @trusted {fprintf(stderr, "Uncaught exception: %s", e);}();
             }
         }
     }
-
+    void shutdown() @safe
+    in(!stopped && !inshutdown)
+    {
+        // scan through all timers
+        auto a = timingwheels.allTimers();
+        foreach(t; a.timers)
+        {
+            try
+            {
+                debug(hiokqueue) tracef("send shutdown to timer %s", t);
+                t._handler(AppEvent.SHUTDOWN);
+            }
+            catch(Exception e)
+            {
+                errorf("Error on event SHUTDOWN in %s", t);
+            }
+        }
+        // scan through active file descriptors
+        // and send SHUTDOWN event
+        if (fileHandlers is null)
+        {
+            inshutdown = true;
+            return;
+        }
+        for(int i=0;i<TOTAL_FILE_HANDLERS;i++)
+        {
+            if (fileHandlers[i] is null)
+            {
+                continue;
+            }
+            try
+            {
+                debug(hiokqueue) tracef("send shutdown to filehandler %s", fileHandlers[i]);
+                fileHandlers[i].eventHandler(i, AppEvent.SHUTDOWN);
+            }
+            catch(Exception e)
+            {
+                () @trusted {printf("exception: %s:%d: %s", __FILE__.ptr, __LINE__, toStringz(e.toString));}();
+            }
+        }
+        inshutdown = true;
+    }
     void run(Duration d) @safe {
 
         immutable bool runInfinitely = (d == Duration.max);
@@ -289,14 +339,18 @@ struct NativeEventLoopImpl {
             execute_overdue_timers();
             if (!runInfinitely && now_real >= deadline)
             {
-                debug(hioepoll) safe_tracef("reached deadline, return");
+                debug(hiokqueue) safe_tracef("reached deadline, return");
                 return;
             }
         }
     }
 
     void start_timer(Timer t) @trusted {
-        debug(hiokqueue) safe_tracef("insert timer: %s", t);
+        debug(hiokqueue) tracef("insert timer: %s", t);
+        if ( inshutdown)
+        {
+            throw new LoopShutdownException("starting timer");
+        }
         auto now = Clock.currTime;
         auto d = t._expires - now;
         d = max(d, 0.seconds);
@@ -361,6 +415,12 @@ struct NativeEventLoopImpl {
         assert(fd>=0);
         immutable filter = appEventToSysEvent(ev);
         debug tracef("start poll on fd %d for events %s", fd, appeventToString(ev));
+        if ( inshutdown )
+        {
+            //throw new LoopShutdownException("start polling");
+            h.eventHandler(fd, AppEvent.SHUTDOWN);
+            return;
+        }
         kevent_t e;
         e.ident = fd;
         e.filter = filter;
