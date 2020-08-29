@@ -642,7 +642,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                     uint sa_len = sin.sizeof;
                     auto rc = (() @trusted => .connect(_fileno, cast(sockaddr*)&sin, sa_len))();
                     if ( rc == -1 && errno() != EINPROGRESS ) {
-                        debug(hiosocket) tracef("connect %s errno: %s", addr, s_strerror(errno()));
+                        debug(hiosocket) tracef("connect so %d to %s errno: %s", _fileno, addr, s_strerror(errno()));
                         _connected = false;
                         _state = State.IDLE;
                         _errno = errno();
@@ -651,11 +651,13 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                     }
                     if ( rc == 0 )
                     {
+                        debug(hiosocket) tracef("connected %d immediately to %s", _fileno, addr);
                         _connected = true;
                         _state = State.IDLE;
                         f(AppEvent.OUT|AppEvent.IMMED);
                         return true;
                     }
+                    debug(hiosocket) tracef("connect %d to %s - wait for event", _fileno, addr);
                     _loop = loop;
                     _state = State.CONNECTING;
                     _callback = f;
@@ -1048,6 +1050,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             flags = MSG_NOSIGNAL;
         }
         auto rc = (() @trusted => .send(_fileno, &data[0], data.length, flags))();
+	debug(hiosocket) tracef("fast .send so %d rc = %d", _fileno, rc);
         if ( rc < 0 ) {
             auto err = errno();
             if ( err != EWOULDBLOCK && err != EAGAIN ) {
@@ -1225,7 +1228,12 @@ class HioSocket
         }
         auto loop = getDefaultLoop();
         _fiber = Fiber.getThis();
+        bool connected;
         void callback(AppEvent e) {
+            if ( e & AppEvent.OUT )
+            {
+                connected = true;
+            }
             if (!(e & AppEvent.IMMED)) {
                 if ( e & AppEvent.TMO )
                 {
@@ -1236,7 +1244,7 @@ class HioSocket
             }
         }
 
-        if (_socket.connect(addr, loop, &callback, timeout))
+        if (_socket.connect(addr, loop, &callback, timeout) && !connected)
         {
             Fiber.yield();
         }
@@ -1272,7 +1280,13 @@ class HioSocket
             _socket.blocking = false;
             return;
         }
+        bool connected;
         void callback(AppEvent e) {
+            debug(hiosocket) tracef("connect so %d - got event %s", _socket._fileno, appeventToString(e));
+            if ( e & AppEvent.OUT )
+            {
+                connected = true;
+            }
             if ( !(e & AppEvent.IMMED) ) {
                 // we called yield
                 if ( e & AppEvent.TMO )
@@ -1283,8 +1297,9 @@ class HioSocket
                 (() @trusted { _fiber.call(); })();
             }
         }
-        if ( _socket.connect(addr, loop, &callback, timeout) )
+        if ( _socket.connect(addr, loop, &callback, timeout) && !connected)
         {
+            debug(hiosocket) tracef("connect so %d - wait for event", _socket._fileno);
             Fiber.yield();
         }
         assert(_socket);
@@ -1431,6 +1446,7 @@ class HioSocket
         assert(_socket);
         _fiber = Fiber.getThis();
         IOResult ioresult;
+	debug(hiosocket) tracef("enter send to so %d", _socket._fileno);
 
         if ( _fiber is null ) {
             IORequest ioreq;
