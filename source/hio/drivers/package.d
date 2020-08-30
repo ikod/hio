@@ -3,6 +3,9 @@ module hio.drivers;
 version(OSX) {
     public import hio.drivers.kqueue;
 } else
+version(FreeBSD) {
+    public import hio.drivers.kqueue;
+} else
 version(linux) {
     public import hio.drivers.epoll;
 } else {
