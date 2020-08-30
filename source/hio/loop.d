@@ -73,6 +73,14 @@ void ignoreSignal(int signum) {
         sigaddset(&m, signum);
         pthread_sigmask(SIG_BLOCK, &m, null);
     }
+    version (FreeBSD) {
+        import core.sys.posix.signal;
+
+        sigset_t m;
+        sigemptyset(&m);
+        sigaddset(&m, signum);
+        pthread_sigmask(SIG_BLOCK, &m, null);
+    }
 }
 
 final class hlEvLoop {
