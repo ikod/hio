@@ -1,6 +1,13 @@
 module hio.drivers.kqueue;
 
-version(OSX):
+version(FreeBSD) {
+    version = KQUEUE;
+}
+version(OSX) {
+    version = KQUEUE;
+}
+
+version(KQUEUE):
 
 import std.algorithm;
 import std.datetime;
@@ -20,7 +27,12 @@ import std.algorithm.comparison: max;
 import core.sys.posix.fcntl: open, O_RDONLY;
 import core.sys.posix.unistd: close;
 
-import core.sys.darwin.sys.event;
+version(OSX) {
+    import core.sys.darwin.sys.event;
+}
+version(FreeBSD) {
+    import core.sys.freebsd.sys.event;
+}
 
 import core.sys.posix.signal;
 import core.stdc.stdint : intptr_t, uintptr_t;
@@ -171,7 +183,7 @@ struct NativeEventLoopImpl {
                 }
             } catch (Exception e) {
                 import core.stdc.stdio: stderr, fprintf;
-                () @trusted {fprintf(stderr, "Uncaught exception: %s", e);}();
+                () @trusted {fprintf(stderr, "Uncaught exception: %s", toStringz(e.toString));}();
             }
         }
     }
@@ -423,7 +435,7 @@ struct NativeEventLoopImpl {
         }
         kevent_t e;
         e.ident = fd;
-        e.filter = filter;
+        e.filter = cast(typeof(e.filter))filter;
         e.flags = EV_ADD;
         if ( in_index == MAXEVENTS ) {
             flush();
@@ -437,7 +449,7 @@ struct NativeEventLoopImpl {
         debug tracef("stop poll on fd %d for events %s", fd, appeventToString(ev));
         kevent_t e;
         e.ident = fd;
-        e.filter = filter;
+        e.filter = cast(typeof(e.filter))filter;
         e.flags = EV_DELETE|EV_DISABLE;
         fd_cleared_from_out_events(e);
         if ( in_index == MAXEVENTS ) {
