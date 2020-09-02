@@ -67,6 +67,10 @@ class Client {
         {
             _connection.connect(r.addresses[0], _timeout);
         }
+        else
+        {
+            throw new SocketException("can't resolve %s".format(_url.host));
+        }
     }
     private void reconnect() {
         if ( _connection )
