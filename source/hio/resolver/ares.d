@@ -715,7 +715,10 @@ package class Resolver: FileEventHandler
                                             _activeResolves6d;
     }
 
-
+    override string describe()
+    {
+        return "resolver";
+    }
     enum CleanupFrequency = 15.seconds;
     this() @safe
     {

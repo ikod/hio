@@ -268,6 +268,11 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
         // wait on the pair
         final class ThreadEventHandler : FileEventHandler
         {
+            override string describe() @safe
+            {
+                return
+                    "thread event handler: f(args): %s(%s)".format(_f, _args);
+            }
             override void eventHandler(int fd, AppEvent e) @trusted
             {
                 _box._pair.read(0, 1);

@@ -17,7 +17,7 @@ import hio.loop;
 import hio.zlib;
 import hio.tls;
 
-import hio.http.common;
+public import hio.http.common;
 import hio.http.http_parser;
 
 import ikod.containers.hashmap: HashMap, hash_function;

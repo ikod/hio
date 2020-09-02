@@ -45,10 +45,12 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
         //}
         State               _state;
         hlSocket            _so;
+        immutable string    _file;
+        immutable int       _line;
         Duration            _op_timeout = 15.seconds;
         hlEvLoop            _loop;
         Timer               _timer;
-        int                 _polling_for;
+        AppEvent            _polling_for;
         HandlerDelegate     _callback;
         void delegate(AsyncSocketLike) @safe _accept_callback;
         bool                _ssl_connected;
@@ -62,14 +64,29 @@ class AsyncSSLSocket : FileEventHandler, AsyncSocketLike
         string              _cert_file;
         string              _key_file;
     }
+    override string describe()
+    {
+        return "AsyncSSLSocket: "
+           ~"_state: %s; ".format(_state)
+           ~"_file(_line): %s:%s; ".format(_file, _line)
+           ~"_polling_for: %s; ".format(appeventToString(_polling_for))
+           ~"_ssl_connected: %s; ".format(_ssl_connected)
+           ~"_timer: [%s]; ".format(_timer)
+           ~"underlying so: %s; ".format(_so.describe)
+           ;
+    }
     this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l = __LINE__) @safe
     {
         _so = new hlSocket(af, sock_type, f, l);
+        _file = f;
+        _line = l;
     }
 
-    this(hlSocket so) @safe
+    this(hlSocket so, string f = __FILE__, int l = __LINE__) @safe
     {
         _so = so;
+        _file = f;
+        _line = l;
     }
     void want_in() @safe
     {

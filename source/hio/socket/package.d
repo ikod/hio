@@ -141,7 +141,19 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
         bool                 _connected;
         uint                 _accepts_in_a_row = 10;
     }
-
+    override string describe() @safe
+    {
+        return "hlSocket: "
+           ~"_state: %s; ".format(_state)
+           ~"_file(_line): %s:%s; ".format(_file, _line)
+           ~"_fileno: %s; ".format(_fileno)
+           ~"_polling: %s; ".format(appeventToString(_polling))
+           ~"_connected: %s; ".format(_connected)
+           ~"_conn_timer: [%s]; ".format(_connect_timer)
+           ~"_io_timer: [%s]; ".format(_io_timer)
+           ~"_callback: %s; ".format(_callback)
+           ;
+    }
     this(ubyte af = AF_INET, int sock_type = SOCK_STREAM, string f = __FILE__, int l =  __LINE__) @safe {
         debug(hiosocket) tracef("create socket");
         _af = af;

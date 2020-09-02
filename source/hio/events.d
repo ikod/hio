@@ -109,10 +109,12 @@ class NotImplementedException : Exception {
 
 abstract class EventHandler {
     abstract void eventHandler(AppEvent) @safe;
+    string        describe();
 }
 
 abstract class FileEventHandler {
     abstract void eventHandler(int, AppEvent) @safe;
+    string        describe() {return "undescribed";}
 }
 
 final class Timer {
@@ -182,6 +184,7 @@ final class Timer {
             _delay = d;
         }
     }
+    alias describe = toString;
     override string toString() const @trusted {
         import std.format: format;
         version(unittest)
