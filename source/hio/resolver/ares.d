@@ -172,11 +172,6 @@ package:
                 (cast(HashMap!(string, DNS4CacheEntry))cache6).clear;
             }
     }
-    ///
-    auto ares_statusString(int status) @trusted
-    {
-        return fromStringz(ares_strerror(status)).idup;
-    }
 
     private shared ResolverCache resolverCache;
     private static Resolver theResolver;
@@ -204,9 +199,9 @@ package:
     }
     static ~this()
     {
-        if ( theResolver )
+        if ( theResolver && theResolver._ares_channel )
         {
-            theResolver.close();
+            ares_destroy(theResolver._ares_channel);
         }
     }
     //
@@ -546,6 +541,13 @@ package:
 
 public:
     ///
+    string resolver_errno(int r) @trusted
+    {
+        import std.conv: to;
+        return to!string(ares_strerror(r));
+    }
+
+    ///
     struct ResolverResult4
     {
         private:
@@ -669,7 +671,7 @@ unittest
     debug(hioresolve) tracef("%s", r);
     r = hio_gethostbyname(".......");
     assert(r.status != 0);
-    tracef("status: %s", ares_statusString(r.status));
+    tracef("status: %s", resolver_errno(r.status));
     r = hio_gethostbyname(".......");
     assert(r.status != 0);
     r = hio_gethostbyname("iuytkjhcxbvkjhgfaksdjf");
