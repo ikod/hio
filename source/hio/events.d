@@ -114,7 +114,7 @@ abstract class EventHandler {
 
 abstract class FileEventHandler {
     abstract void eventHandler(int, AppEvent) @safe;
-    string        describe() {return "undescribed";}
+    abstract string describe();
 }
 
 final class Timer {

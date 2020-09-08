@@ -4,8 +4,9 @@ import std.experimental.logger;
 import std.stdio;
 import std.socket;
 import std.string;
+import std.array;
 import std.datetime;
-import std.algorithm.mutation: copy;
+import std.algorithm;
 import std.exception;
 import std.typecons: Tuple;
 import std.uni: toLower;
@@ -209,8 +210,9 @@ class AsyncHTTPClient
         _connection.connect(endpoint, _loop, &_connect_callback, _connect_timeout);
     }
 
-    private void _resolver_callback(int status, InternetAddress[] addresses) @safe
+    private void _resolver_callback(ResolverResult4 r) @safe
     {
+        auto status = r.status;
         debug(hiohttp) tracef("resolve calback");
         if ( status != ARES_SUCCESS)
         {
@@ -221,13 +223,17 @@ class AsyncHTTPClient
             return;
         }
         _state = State.CONNECTING;
-        _endpoints = addresses;
+        _endpoints = r.addresses.map!(a => cast(InternetAddress)a).array;
         _connect_call();
     }
     private void _resolver_call(URL url) @safe
     {
         debug(hiohttp) tracef("resolve %s", url);
-        hio_gethostbyname(url.host, &_resolver_callback, url.port);
+        auto r = hio_gethostbyname(url.host, &_resolver_callback, url.port);
+        if ( !r.isEmpty )
+        {
+            _resolver_callback(r);
+        }
     }
 
     /// build request line.
@@ -791,23 +797,6 @@ class HTTPClient
     }
 }
 
-unittest
-{
-    import std.stdio;
-    import hio.scheduler;
-    import std.experimental.logger;
-    globalLogLevel = LogLevel.info;
-    App({
-        info("Test httpclient in task");
-        HTTPClient c = new HTTPClient();
-        auto r = c.execute(Method("GET"), parse_url("https://httpbin.org/get"));
-        writefln("result: %s", r);
-        r = c.execute(Method("GET"), parse_url("https://httpbin.org/get"));
-        writefln("result: %s", r);
-        c.close();
-    });
-    uninitializeLoops();
-}
 
 struct AsyncHTTPResult
 {
@@ -856,6 +845,24 @@ unittest
     assert(abc.data == "bbb");
     abc = r.getHeader("none");
     assert(abc.empty);
+}
+
+unittest
+{
+    import std.stdio;
+    import hio.scheduler;
+    import std.experimental.logger;
+    globalLogLevel = LogLevel.info;
+    App({
+        info("Test httpclient in task");
+        HTTPClient c = new HTTPClient();
+        auto r = c.execute(Method("GET"), parse_url("https://httpbin.org/get"));
+        writefln("result: %s", r);
+        r = c.execute(Method("GET"), parse_url("https://httpbin.org/get"));
+        writefln("result: %s", r);
+        c.close();
+    });
+    uninitializeLoops();
 }
 
 unittest
@@ -951,6 +958,7 @@ unittest
     //     client.execute(Method("GET"), url, &callback);
     //     hlSleep(25.seconds);
     // });
+    globalLogLevel = LogLevel.info;
     App({
         AsyncHTTPClient client = new AsyncHTTPClient();
         void callback(AsyncHTTPResult result) @safe

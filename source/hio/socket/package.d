@@ -301,7 +301,7 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
                 _callback(e);
                 return;
             }
-            assert(e & (AppEvent.OUT|AppEvent.HUP|AppEvent.HUP), "We can handle only OUT event in connectiong state, but got %s".format(e));
+            assert(e & (AppEvent.OUT|AppEvent.HUP|AppEvent.ERR), "We can handle only OUT event in connecting state, but got %s".format(e));
             if ( e & AppEvent.OUT )
             {
                 _connected = true;
@@ -1458,7 +1458,7 @@ class HioSocket
         assert(_socket);
         _fiber = Fiber.getThis();
         IOResult ioresult;
-	debug(hiosocket) tracef("enter send to so %d", _socket._fileno);
+        debug(hiosocket) tracef("enter send to so %d", _socket._fileno);
 
         if ( _fiber is null ) {
             IORequest ioreq;

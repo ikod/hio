@@ -144,7 +144,7 @@ ReturnType!F App(F, A...) (F f, A args) {
     if ( !box._exception)
     {
         // if we started ok - run loop
-        getDefaultLoop.run(Duration.max);
+        getDefaultLoop().run(Duration.max);
     }
     if (box._exception)
     {
@@ -219,19 +219,22 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     {
         debug tracef("stopping loop in thread");
         ubyte[1] cmd = [Commands.StopLoop];
-        _commands.write(1, cmd);
+        auto s = _commands.write(1, cmd);
+        assert(s == 1);
     }
     void wakeUpThreadLoop()
     {
         debug tracef("waking up loop in thread");
         ubyte[1] cmd = [Commands.WakeUpLoop];
-        _commands.write(1, cmd);
+        auto s = _commands.write(1, cmd);
+        assert(s == 1);
     }
     void shutdownThreadLoop()
     {
         debug tracef("shutdown loop in thread");
         ubyte[1] cmd = [Commands.ShutdownLoop];
-        _commands.write(1, cmd);
+        auto s = _commands.write(1, cmd);
+        assert(s == 1);
     }
     override bool wait(Duration timeout = Duration.max)
     in(!_isDaemon)      // this not works with daemons
@@ -307,6 +310,10 @@ class Threaded(F, A...) : Computation if (isCallable!F) {
     {
         class CommandsHandler : FileEventHandler
         {
+            override string describe()
+            {
+                return "CommandsHandler";
+            }
             override void eventHandler(int fd, AppEvent e)
             {
                 assert(fd == _commands[0]);
@@ -526,9 +533,12 @@ class Task(F, A...) : Computation if (isCallable!F) {
     private final void run() {
         static if ( Void )
         {
-            try {
+            try
+            {
                 _f(_args);
-            } catch (Throwable e) {
+            }
+            catch (Throwable e)
+            {
                 _exception = e;
                 version(unittest)
                 {
@@ -539,13 +549,15 @@ class Task(F, A...) : Computation if (isCallable!F) {
                     errorf("got throwable %s", e);
                 }
             }
-            //debug tracef("run void finished, waitors: %s", this._waitor);
         }
         else 
         {
-            try {
+            try
+            {
                 _result = _f(_args);
-            } catch(Throwable e) {
+            }
+            catch(Throwable e)
+            {
                 _exception = e;
                 version(unittest)
                 {
@@ -564,6 +576,7 @@ class Task(F, A...) : Computation if (isCallable!F) {
             this._waitor = null;
             debug tracef("t:%0X task %s finished, wakeup waitor", Thread.getThis.id, _task_id);
             w.call();
+            return;
         }
         else
         {
