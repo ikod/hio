@@ -197,8 +197,10 @@ package:
             theResolver = new Resolver();
         }
     }
+    private static bool exiting;
     static ~this()
     {
+        exiting = true;
         if ( theResolver && theResolver._ares_channel )
         {
             ares_destroy(theResolver._ares_channel);
@@ -212,12 +214,15 @@ package:
     //
     private extern(C) void ares_callback4(void *arg, int status, int timeouts, ubyte *abuf, int alen)
     {
+        if ( exiting )
+        {
+            return;
+        }
         int              id = cast(int)arg;
         int              naddrttls = 32;
         ares_addrttl[32] addrttls;
         hostent*         he;
         long             min_ttl = long.max;
-        ushort port;
 
         DNS4CacheEntry   cache_entry;
         cache_entry._status = status;
@@ -228,8 +233,10 @@ package:
         auto f = theResolver._dns4QueryInprogress.fetch(id);
         assert(f.ok);
 
-        port = f.value._port;
+        auto port = f.value._port;
         auto callback = f.value._callback;
+        theResolver._dns4QueryInprogress.remove(id);
+
         if ( f.value._timer ) getDefaultLoop.stopTimer(f.value._timer);
 
         debug(hioresolve) tracef("got callback from ares for INET query id %d, hostname %s",
