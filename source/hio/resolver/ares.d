@@ -642,7 +642,7 @@ public:
 
 unittest
 {
-    infof("shared dns cache ops");
+    infof("=== Testing resolver shared cache");
     _check_init_resolverCache();
     assert(resolverCache ! is null);
     DNS4CacheEntry e;
@@ -657,7 +657,7 @@ unittest
 unittest
 {
     globalLogLevel = LogLevel.info;
-    info("=== Testing resolver ares/sync  INET4 ===");
+    info("=== Testing resolver INET4 sync/no loop ===");
     auto r = hio_gethostbyname("localhost");
     assert(r.status == 0);
     debug(hioresolve) tracef("%s", r);
@@ -680,6 +680,22 @@ unittest
     assert(r.status != 0);
     debug(hioresolve) tracef("%s", r);
     debug(hioresolve) tracef("status: %s", ares_statusString(r.status));
+
+    DNS4CacheEntry e;
+    e._status = ARES_SUCCESS;
+    e._ttl = 1000000;
+    e._timestamp = Clock.currStdTime;
+    e._addresses = [0x7f_00_00_01];
+    resolverCache.put4("testhost", e);
+
+    // check resolve "127.0.0.1"
+    r = hio_gethostbyname("127.0.0.1", InternetAddress.PORT_ANY, 5.seconds);
+    assert(r._status == ARES_SUCCESS);
+    assert(r._addresses.length >= 1);
+    Address localhost = getAddress("127.0.0.1", InternetAddress.PORT_ANY)[0];
+    Address resolved = r._addresses[0];
+    assert(resolved.addressFamily == AF_INET);
+    assert(*resolved.name == *localhost.name);
     globalLogLevel = LogLevel.info;
 }
 
@@ -687,9 +703,7 @@ unittest
 {
     import std.array: array;
     globalLogLevel = LogLevel.info;
-    info("=== Testing resolver ares/async INET4 ===");
-    // theResolver = new Resolver();
-    // theResolver._loop = getDefaultLoop();
+    info("=== Testing resolver INET4 async/callback ===");
     auto app(string hostname)
     {
         int status;
@@ -743,29 +757,18 @@ unittest
 
 unittest
 {
+    info("=== Testing resolver INET4 sync/task ===");
     globalLogLevel = LogLevel.info;
-    _check_init_resolverCache();
     DNS4CacheEntry e;
     e._status = ARES_SUCCESS;
     e._ttl = 1000000;
     e._timestamp = Clock.currStdTime;
     e._addresses = [0x7f_00_00_01];
     resolverCache.put4("testhost", e);
-
-    infof("no event loop resolving");
-    // check resolve "127.0.0.1"
-    auto r = hio_gethostbyname("127.0.0.1", InternetAddress.PORT_ANY, 5.seconds);
-    assert(r._status == ARES_SUCCESS);
-    assert(r._addresses.length >= 1);
-    Address localhost = getAddress("127.0.0.1", InternetAddress.PORT_ANY)[0];
-    Address resolved = r._addresses[0];
-    assert(resolved.addressFamily == AF_INET);
-    assert(*resolved.name == *localhost.name);
     App({
         // test cached resolve
-        r = hio_gethostbyname("testhost", 12345);
+        auto r = hio_gethostbyname("testhost", 12345);
         assert(r.status == ARES_SUCCESS);
-        infof("%s", r.addresses);
         assert(r.addresses.length == 1);
         assert((cast(InternetAddress)r.addresses[0]).addr == 0x7f000001);
         assert((cast(InternetAddress)r.addresses[0]).port == 12345);
@@ -800,7 +803,7 @@ unittest
 unittest
 {
     infof("Testing resolver with timeouts");
-    globalLogLevel = LogLevel.trace;
+    globalLogLevel = LogLevel.info;
     App({
         resolverCache.clear();
         auto resolve(string hostname)
