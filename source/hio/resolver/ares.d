@@ -201,9 +201,13 @@ package:
     static ~this()
     {
         exiting = true;
-        if ( theResolver && theResolver._ares_channel )
+        if ( theResolver )
         {
-            ares_destroy(theResolver._ares_channel);
+            if (theResolver._ares_channel )
+            {
+                ares_destroy(theResolver._ares_channel);
+            }
+            theResolver._dns4QueryInprogress.clear();
         }
     }
     //
@@ -439,6 +443,7 @@ package:
             {
                 // handle timeout
                 // remove this query from the InProgress and call calback
+                theResolver._dns4QueryInprogress.remove(id);
                 ResolverResult4 result = ResolverResult4(ARES_ETIMEOUT, new InternetAddress[](0));
                 callback(result);
             });

@@ -910,7 +910,6 @@ class hlSocket : FileEventHandler, AsyncSocketLike {
             immutable uint flags = MSG_NOSIGNAL;
         } else {
             immutable uint flags = 0;
-
         }
 
         auto old_timeouts = getSndRcvTimeouts();
