@@ -235,7 +235,11 @@ package:
         assert(theResolver);
 
         auto f = theResolver._dns4QueryInprogress.fetch(id);
-        assert(f.ok);
+        if ( !f.ok )
+        {
+            debug(hioresolve) tracef("dns4queryinprogr[%d] not found", id);
+            return;
+        }
 
         auto port = f.value._port;
         auto callback = f.value._callback;
