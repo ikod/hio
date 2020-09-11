@@ -63,6 +63,8 @@ package:
     alias ares_channel = ares_channeldata*;
     alias ares_socket_t = int;
 
+    enum ARES_OPT_FLAGS = (1 << 0);
+    enum ARES_FLAG_STAYOPEN = (1 << 4);
     enum ARES_SOCKET_BAD = -1;
     enum ARES_GETSOCK_MAXNUM = 16;
 
@@ -90,12 +92,19 @@ package:
     enum ns_c_in = 1;
     enum ns_t_a  = 1;
     enum ns_t_aaaa = 28;
-
+    struct ares_options {
+        int flags;
+    };
+    static ares_options opts = {flags:ARES_FLAG_STAYOPEN};
     private extern(C)
     {
         alias    ares_host_callback = void function(void *arg, int status, int timeouts, hostent *he);
         alias    ares_callback =      void function(void *arg, int status, int timeouts, ubyte *abuf, int alen);
         int      ares_init(ares_channel*) @trusted;
+        int      ares_init_options(ares_channel* channel,
+                      ares_options *options,
+                      int optmask) @trusted;
+
         void     ares_destroy(ares_channel);
         timeval* ares_timeout(ares_channel channel, timeval *maxtv, timeval *tv);
         char*    ares_strerror(int);
@@ -409,9 +418,8 @@ package:
 
         this() @safe
         {
-            // _loop = getDefaultLoop();
-            immutable init_res = ares_init(&_ares_channel);
-            assert(init_res == ARES_SUCCESS, "Can't initialise ares.");
+            immutable init_opts = ares_init_options(&_ares_channel, &opts, ARES_OPT_FLAGS);
+            assert(init_opts == ARES_SUCCESS);
         }
         void close()
         {
