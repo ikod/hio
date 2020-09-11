@@ -170,6 +170,11 @@ struct NativeEventLoopImpl {
             // execute timers which user requested with negative delay
             Timer t = overdue[0];
             overdue = overdue[1..$];
+            if ( t is null )
+            {
+                // timer was removed
+                continue;
+            }
             debug(hiokqueue) tracef("execute overdue %s", t);
             HandlerDelegate h = t._handler;
             try {
@@ -392,6 +397,15 @@ struct NativeEventLoopImpl {
 
     void stop_timer(Timer t) @safe {
         debug(hiokqueue) safe_tracef("remove timer %s", t);
+        if (overdue.length > 0)
+            for(int i=0;i<overdue.length;i++)
+            {
+                if (overdue[i] is t)
+                {
+                    overdue[i] = null;
+                    debug(hioepoll) tracef("remove timer from overdue %s", t);
+                }
+            }
         if (timingwheels.totalTimers() > 0)
         {
             // static destructors can try to stop timers after loop deinit

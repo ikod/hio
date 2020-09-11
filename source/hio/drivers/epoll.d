@@ -122,6 +122,11 @@ struct NativeEventLoopImpl {
             // execute timers which user requested with negative delay
             Timer t = overdue[0];
             overdue = overdue[1..$];
+            if ( t is null)
+            {
+                // timer was removed
+                continue;
+            }
             debug(hioepoll) tracef("execute overdue %s", t);
             HandlerDelegate h = t._handler;
             try {
@@ -361,7 +366,7 @@ struct NativeEventLoopImpl {
         }
     }
     void start_timer(Timer t) @safe {
-        debug(hioepoll) safe_tracef("insert timer: %s", t);
+        debug(hioepoll) tracef("insert timer: %s", t);
         if ( inshutdown)
         {
             throw new LoopShutdownException("starting timer");
@@ -371,6 +376,7 @@ struct NativeEventLoopImpl {
         d = max(d, 0.seconds);
         if ( d < tick ) {
             overdue ~= t;
+            debug(hioepoll) tracef("inserted overdue timer: %s", t);
             return;
         }
         assert(!t._armed);
@@ -382,7 +388,7 @@ struct NativeEventLoopImpl {
     }
 
     void stop_timer(Timer t) @safe {
-        debug(hioepoll) safe_tracef("remove timer %s", t);
+        debug(hioepoll) tracef("remove timer %s", t);
         if ( advancedTimersArrayLength > 0)
         {
             for(int j=0; j<advancedTimersArrayLength;j++)
@@ -398,6 +404,17 @@ struct NativeEventLoopImpl {
         {
             advancedTimersHash.remove(t.id);
             return;
+        }
+        else if (overdue.length > 0)
+        {
+            for(int i=0;i<overdue.length;i++)
+            {
+                if (overdue[i] is t)
+                {
+                    overdue[i] = null;
+                    debug(hioepoll) tracef("remove timer from overdue %s", t);
+                }
+            }
         }
 
         // static destructors can try to stop timers after loop deinit, so we check totalTimers
