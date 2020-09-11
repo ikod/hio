@@ -76,20 +76,20 @@ void main()
     auto loop = getDefaultLoop();
     int  counter = 100;
     Timer t;
-    void resolve4(int status, InternetAddress[] addresses) @trusted
+    void resolve4(ResolverResult4 r) @trusted
     {
         char[32] buf;
-        writefln("[%s]", addresses);
+        writefln("[%s]", r.addresses);
         counter--;
         if ( counter == 0 )
         {
             loop.stop();
         }
     }
-    void resolve6(int status, Internet6Address[] addresses) @trusted
+    void resolve6(ResolverResult6 r) @trusted
     {
         char[64] buf;
-        writefln("[%s]", addresses);
+        writefln("[%s]", r.addresses);
         counter--;
         if ( counter == 0 )
         {

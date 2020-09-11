@@ -45,5 +45,5 @@ void main()
         tasks.each!(t => t.wait);
         return zip(hosts, tasks.map!(t=>t.result).array);
     });
-    result.each!(r => writefln("domain: '%s', status: %s, addresses: %s", r[0], ares_statusString(r[1].status), r[1].addresses));
+    result.each!(r => writefln("domain: '%s', status: %s, addresses: %s", r[0], resolver_errno(r[1].status), r[1].addresses));
 }

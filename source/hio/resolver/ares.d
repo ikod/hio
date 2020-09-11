@@ -166,11 +166,37 @@ package:
             {
                 (cast(HashMap!(string, DNS4CacheEntry))cache4)[host] = e;
             }
+            synchronized auto get6(string host) @trusted
+            {
+                auto f = (cast(HashMap!(string, DNS6CacheEntry))cache6).fetch(host);
+                if ( !f.ok )
+                {
+                    return f;
+                }
+                // check if it is expired
+                immutable now = Clock.currStdTime;
+                auto v = f.value;
+                if ( v._timestamp + v._ttl >= now )
+                {
+                    // it's fresh
+                    return f;
+                }
+                // clear expired entry, return empty response
+                (cast(HashMap!(string, DNS6CacheEntry))cache4).remove(host);
+                f.ok = false;
+                f.value = DNS6CacheEntry();
+                return f;
+            }
+            synchronized void put6(string host, DNS6CacheEntry e) @trusted
+            {
+                (cast(HashMap!(string, DNS6CacheEntry))cache6)[host] = e;
+            }
             synchronized void clear() @trusted
             {
                 (cast(HashMap!(string, DNS4CacheEntry))cache4).clear;
                 (cast(HashMap!(string, DNS4CacheEntry))cache6).clear;
             }
+            // XXX add cache cleanup
     }
 
     private shared ResolverCache resolverCache;
@@ -208,6 +234,7 @@ package:
                 ares_destroy(theResolver._ares_channel);
             }
             theResolver._dns4QueryInprogress.clear();
+            theResolver._dns6QueryInprogress.clear();
         }
     }
     //
@@ -241,11 +268,16 @@ package:
             return;
         }
 
-        auto port = f.value._port;
-        auto callback = f.value._callback;
+
         theResolver._dns4QueryInprogress.remove(id);
 
-        if ( f.value._timer ) getDefaultLoop.stopTimer(f.value._timer);
+        auto port = f.value._port;
+        auto callback = f.value._callback;
+        if ( f.value._timer ) 
+        {
+            debug(hioresolve) tracef("stop timer %s", f.value._timer);
+            getDefaultLoop.stopTimer(f.value._timer);
+        }
 
         debug(hioresolve) tracef("got callback from ares for INET query id %d, hostname %s",
             id, f.value._hostname);
@@ -278,6 +310,69 @@ package:
         cache_entry._addresses = result;
         callback(ResolverResult4(cache_entry, port));
     }
+    private extern(C) void ares_callback6(void *arg, int status, int timeouts, ubyte *abuf, int alen)
+    {
+        if ( exiting )
+        {
+            return;
+        }
+        int               id = cast(int)arg;
+        int               naddrttls = 32;
+        hostent*          he;
+        int naddr6ttls =  32;
+        ares_addr6ttl[32] addr6ttls;
+        long              min_ttl = long.max;
+        ubyte[16][]       result;
+
+        DNS6CacheEntry   cache_entry;
+        cache_entry._status = status;
+        cache_entry._ttl = MaxNegTTL * sec2hnsec;
+
+        assert(theResolver);
+
+        auto f = theResolver._dns6QueryInprogress.fetch(id);
+        if ( !f.ok )
+        {
+            debug(hioresolve) tracef("dns6queryinprogr[%d] not found", id);
+            return;
+        }
+
+        auto port = f.value._port;
+        auto callback = f.value._callback;
+        theResolver._dns6QueryInprogress.remove(id);
+
+        if ( f.value._timer ) getDefaultLoop.stopTimer(f.value._timer);
+
+        debug(hioresolve) tracef("got callback from ares for INET query id %d, hostname %s, status: %s",
+            id, f.value._hostname, resolver_errno(status));
+
+        if ( status != ARES_SUCCESS)
+        {
+            callback(ResolverResult6(cache_entry, port));
+            return;
+        }
+        immutable parse_status = ares_parse_aaaa_reply(abuf, alen, &he, addr6ttls.ptr, &naddr6ttls);
+        scope(exit)
+        {
+            if ( he ) ares_free_hostent(he);
+        }
+        cache_entry._status = parse_status;
+        if (parse_status == ARES_SUCCESS)
+        {
+            foreach(ref a; addr6ttls[0..naddr6ttls])
+            {
+                min_ttl = min(a.ttl, min_ttl);
+                auto addr = a.ip6addr;
+                result ~= addr;
+            }
+            cache_entry._ttl = max(min_ttl,1) * sec2hnsec;
+            cache_entry._addresses = result;
+        }
+        cache_entry._ttl = max(min_ttl, 1) * sec2hnsec;
+        cache_entry._addresses = result;
+        debug(hioresolve) tracef("result: %s", cache_entry);
+        callback(ResolverResult6(cache_entry, port));
+    }
 
     struct DNS4QueryInProgress
     {
@@ -288,8 +383,14 @@ package:
         void delegate(ResolverResult4)  _callback;
     }
 
-    // alias ResolverResult4 = Tuple!(int, "status", Address[], "addresses");
-    alias ResolverResult6 = Tuple!(int, "status", Internet6Address[], "addresses");
+    struct DNS6QueryInProgress
+    {
+        string                          _hostname;
+        ushort                          _port;
+        int                             _query_id;
+        Timer                           _timer;
+        void delegate(ResolverResult6)  _callback;
+    }
 
     private class Resolver : FileEventHandler
     {
@@ -302,6 +403,7 @@ package:
         bool[ARES_GETSOCK_MAXNUM]           _in_write;
         ares_socket_t[ARES_GETSOCK_MAXNUM]  _sockets;
         HashMap!(int, DNS4QueryInProgress)  _dns4QueryInprogress;
+        HashMap!(int, DNS6QueryInProgress)  _dns6QueryInprogress;
 
     package:
 
@@ -314,6 +416,14 @@ package:
         void close()
         {
             foreach(p;_dns4QueryInprogress.byPair)
+            {
+                Timer t = p.value._timer;
+                if ( t )
+                {
+                    getDefaultLoop.stopTimer(t);
+                }
+            }
+            foreach(p;_dns6QueryInprogress.byPair)
             {
                 Timer t = p.value._timer;
                 if ( t )
@@ -350,6 +460,39 @@ package:
                             addr += (*a)[i];
                         }
                         result ~= addr;
+                        a++;
+                    }
+                }();
+                dnsInfo._status = ARES_SUCCESS;
+                dnsInfo._timestamp = Clock.currStdTime;
+                dnsInfo._ttl = MaxFilesTTL * sec2hnsec; // -> hnsecs
+                dnsInfo._addresses = result;
+            }
+            if ( he )
+            {
+                ares_free_hostent(he);
+            }
+            return dnsInfo;
+        }
+        DNS6CacheEntry resolve6FromFile(string hostname) @safe
+        {
+            // try to resolve from files
+            DNS6CacheEntry dnsInfo;
+            ubyte[16][] result;
+            hostent* he;
+            auto status = () @trusted {
+                return ares_gethostbyname_file(_ares_channel, toStringz(hostname), AF_INET6, &he);
+            }();
+            if ( status == ARES_SUCCESS )
+            {
+                debug(hioresolve) tracef("he=%s", fromStringz(he.h_name));
+                debug(hioresolve) tracef("h_length=%X", he.h_length);
+                auto a = he.h_addr_list;
+                () @trusted
+                {
+                    while( *a )
+                    {
+                        result ~= *(cast(ubyte[16]*)*a);
                         a++;
                     }
                 }();
@@ -438,6 +581,49 @@ package:
             return result;
         }
 
+        private ResolverResult6 resolveSync6(string hostname, ushort port, Duration timeout)
+        {
+            ResolverResult6 result;
+            int id = _query_id++;
+            void callback(ResolverResult6 r)
+            {
+                result = r;
+            }
+            DNS6QueryInProgress qip = {
+                _hostname: hostname,
+                _port: port,
+                _query_id: id,
+                _timer: null,
+                _callback: &callback
+            };
+            _dns6QueryInprogress[id] = qip;
+            debug(hioresolve) tracef("handle sync resolve for %s", hostname);
+            ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, &ares_callback6, cast(void*)id);
+            if ( !result.isEmpty )
+            {
+                return result;
+            }
+            debug(hioresolve) tracef("wait on select for sync resolve for %s", hostname);
+            int nfds, count;
+            fd_set readers, writers;
+            timeval tv;
+            timeval *tvp;
+            auto started = Clock.currTime;
+            while ( Clock.currTime - started < timeout ) {
+                FD_ZERO(&readers);
+                FD_ZERO(&writers);
+                nfds = ares_fds(theResolver._ares_channel, &readers, &writers);
+                if (nfds == 0)
+                    break;
+                tvp = ares_timeout(theResolver._ares_channel, null, &tv);
+                debug(hioresolve) tracef("select sleep for %s", tv);
+                count = select(nfds, &readers, &writers, null, tvp);
+                debug(hioresolve) tracef("select returned %d events %s, %s", count, readers, writers);
+                ares_process(theResolver._ares_channel, &readers, &writers);
+            }
+            return result;
+        }
+
         void send_IN_A_Query(string hostname, ushort port,
                     void delegate(ResolverResult4) @safe callback,
                     Duration timeout) @safe
@@ -463,6 +649,33 @@ package:
             () @trusted
             {
                 ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_a, &ares_callback4, cast(void*)id);
+            }();
+        }
+        void send_IN_AAAA_Query(string hostname, ushort port,
+                    void delegate(ResolverResult6) @safe callback,
+                    Duration timeout) @safe
+        {
+            int id = _query_id++;
+            Timer t = new Timer(timeout,(AppEvent e) @safe
+            {
+                // handle timeout
+                // remove this query from the InProgress and call calback
+                theResolver._dns6QueryInprogress.remove(id);
+                ResolverResult6 result = ResolverResult6(ARES_ETIMEOUT, new Internet6Address[](0));
+                callback(result);
+            });
+            DNS6QueryInProgress qip = {
+                _hostname: hostname,
+                _port: port,
+                _query_id: id,
+                _timer: t,
+                _callback: callback
+            };
+            _dns6QueryInprogress[id] = qip;
+            getDefaultLoop.startTimer(t);
+            () @trusted
+            {
+                ares_query(_ares_channel, toStringz(hostname), ns_c_in, ns_t_aaaa, &ares_callback6, cast(void*)id);
             }();
         }
 
@@ -554,6 +767,41 @@ package:
         }
         return result;
     }
+    ResolverResult6 tryLocalResolve6(string host, short port) @safe
+    {
+        _check_init_resolverCache();
+        _check_init_theResolver();
+        ResolverResult6 result;
+
+        ubyte[16] addr;
+        int p = () @trusted 
+        {
+            return inet_pton(AF_INET6, toStringz(host), addr.ptr);
+        }();
+
+        if (p > 0)
+        {
+            debug(hioresolve) tracef("address converetd from %s", host, p);
+            return ResolverResult6(ARES_SUCCESS, [new Internet6Address(addr, port)]);
+        }
+        // string is not addr, check cache
+        assert(resolverCache);
+        auto cache_entry = resolverCache.get6(host);
+        if ( cache_entry.ok )
+        {
+            debug(hioresolve) tracef("resolved %s from cache", host);
+            return ResolverResult6(cache_entry.value, port);
+        }
+        // entry not in cache, try resolve from file
+        assert(theResolver);
+        auto file_entry = theResolver.resolve6FromFile(host);
+        if ( file_entry._status == ARES_SUCCESS )
+        {
+            resolverCache.put6(host, file_entry);
+            return ResolverResult6(file_entry, port);
+        }
+        return result;
+    }
 
 public:
     ///
@@ -587,11 +835,44 @@ public:
         {
             return _status == ARES_EMPTY;
         }
-        auto status()
+        auto status() inout @safe @nogc
         {
             return _status;
         }
-        auto addresses()
+        auto addresses() inout @safe @nogc
+        {
+            return _addresses;
+        }
+    }
+    ///
+    struct ResolverResult6
+    {
+        private:
+            int         _status = ARES_EMPTY;
+            Address[]   _addresses;
+
+        public:
+        this(int s, Address[] a) @safe
+        {
+            _status = s;
+            _addresses = a;
+        }
+        this(DNS6CacheEntry entry, ushort port) @safe
+        {
+            _status = entry._status;
+            _addresses = entry._addresses
+                .map!(a => new Internet6Address(a, port))
+                .map!(a => cast(Address)a).array;
+        }
+        bool isEmpty() @safe
+        {
+            return _status == ARES_EMPTY;
+        }
+        auto status() inout @safe @nogc
+        {
+            return _status;
+        }
+        auto addresses() inout @safe @nogc
         {
             return _addresses;
         }
@@ -600,7 +881,7 @@ public:
     ResolverResult4 hio_gethostbyname(string host, ushort port = InternetAddress.PORT_ANY, Duration timeout = 5.seconds)
     {
         bool yielded;
-        ResolverResult4 result;
+        ResolverResult4 cb_result, result;
 
         auto fiber = Fiber.getThis();
         if ( fiber is null )
@@ -618,22 +899,28 @@ public:
         void resolveCallback(ResolverResult4 r) @safe
         {
             debug(hioresolve) tracef("received result %s", r);
-            result = r;
+            cb_result = r;
             if ( yielded )
             {
+                debug(hioresolve) tracef("calling back with %s", cb_result);
                 () @trusted{fiber.call();}();
             }
         }
         result = hio_gethostbyname(host, &resolveCallback, port, timeout);
-        if ( result.isEmpty )
+        if ( !cb_result.isEmpty )
         {
-            // wait for callback
-            debug(hioresolve) tracef("yeilding for resolving");
-            yielded = true;
-            Fiber.yield();
-            debug(hioresolve) tracef("returned from wait");
+            return cb_result;
         }
-        return result;
+        if ( !result.isEmpty )
+        {
+            return result;
+        }
+        // wait for callback
+        debug(hioresolve) tracef("yeilding for resolving");
+        yielded = true;
+        Fiber.yield();
+        debug(hioresolve) tracef("returned from wait");
+        return cb_result;
     }
     ///
     ResolverResult4 hio_gethostbyname(C)(string hostname, C callback, ushort port = InternetAddress.PORT_ANY, Duration timeout = 5.seconds) @safe
@@ -657,6 +944,69 @@ public:
         theResolver.handleGetSocks(rc, &theResolver._sockets);
         return result;
     }
+    ///
+    ResolverResult6 hio_gethostbyname6(string host, ushort port = InternetAddress.PORT_ANY, Duration timeout = 5.seconds)
+    {
+        bool yielded;
+        ResolverResult6 result;
+
+        auto fiber = Fiber.getThis();
+        if ( fiber is null )
+        {
+            result = tryLocalResolve6(host, port);
+            if ( !result.isEmpty )
+            {
+                return result;
+            }
+            return theResolver.resolveSync6(host, port, timeout);
+        }
+
+        // resolve using ares and/or loop
+        debug(hioresolve) tracef("resolve %s using ares", host);
+        void resolveCallback(ResolverResult6 r) @safe
+        {
+            debug(hioresolve) tracef("received result %s", r);
+            result = r;
+            if ( yielded )
+            {
+                () @trusted{fiber.call();}();
+            }
+        }
+        result = hio_gethostbyname6(host, &resolveCallback, port, timeout);
+        if ( result.isEmpty )
+        {
+            // wait for callback
+            debug(hioresolve) tracef("yeilding for resolving");
+            yielded = true;
+            Fiber.yield();
+            debug(hioresolve) tracef("returned from wait");
+        }
+        return result;
+    }
+    ///
+    ResolverResult6 hio_gethostbyname6(C)(string hostname, C callback, ushort port = InternetAddress.PORT_ANY, Duration timeout = 5.seconds) @safe
+    {
+        ResolverResult6 result = tryLocalResolve6(hostname, port);
+        if ( !result.isEmpty )
+        {
+            return result;
+        }
+        // local methods failed, 
+        // prepare request and send it, wait for response
+        void handler(ResolverResult6 r) @safe
+        {
+            result = r;
+            debug(hioresolve) tracef("callback 6, %s", r);
+            callback(r);
+        }
+        debug(hioresolve) tracef("send AAAA query for %s", hostname);
+        theResolver.send_IN_AAAA_Query(hostname, port, &handler, timeout);
+        auto rc = ares_getsock(theResolver._ares_channel, &theResolver._sockets[0], ARES_GETSOCK_MAXNUM);
+        debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, theResolver._sockets);
+        // prepare listening for socket events
+        theResolver.handleGetSocks(rc, &theResolver._sockets);
+        return result;
+    }
 
 unittest
 {
@@ -664,7 +1014,7 @@ unittest
     _check_init_resolverCache();
     assert(resolverCache ! is null);
     DNS4CacheEntry e;
-    e._ttl = 1000;
+    e._ttl = 100000;
     e._timestamp = Clock.currStdTime;
     resolverCache.put4("testhost", e);
     auto v = resolverCache.get4("testhost");
@@ -693,11 +1043,11 @@ unittest
     r = hio_gethostbyname("iuytkjhcxbvkjhgfaksdjf");
     assert(r.status != 0);
     debug(hioresolve) tracef("%s", r);
-    debug(hioresolve) tracef("status: %s", ares_statusString(r.status));
+    debug(hioresolve) tracef("status: %s", resolver_errno(r.status));
     r = hio_gethostbyname("iuytkjhcxbvkjhgfaksdjf");
     assert(r.status != 0);
     debug(hioresolve) tracef("%s", r);
-    debug(hioresolve) tracef("status: %s", ares_statusString(r.status));
+    debug(hioresolve) tracef("status: %s", resolver_errno(r.status));
 
     DNS4CacheEntry e;
     e._status = ARES_SUCCESS;
@@ -713,7 +1063,7 @@ unittest
     Address localhost = getAddress("127.0.0.1", InternetAddress.PORT_ANY)[0];
     Address resolved = r._addresses[0];
     assert(resolved.addressFamily == AF_INET);
-    assert(*resolved.name == *localhost.name);
+    assert((cast(sockaddr_in*)resolved.name).sin_addr == (cast(sockaddr_in*)localhost.name).sin_addr);
     globalLogLevel = LogLevel.info;
 }
 
@@ -820,13 +1170,13 @@ unittest
 
 unittest
 {
-    infof("Testing resolver with timeouts");
+    infof("=== Testing resolver timeouts ===");
     globalLogLevel = LogLevel.info;
-    App({
+    auto v = App({
         resolverCache.clear();
         auto resolve(string hostname)
         {
-            auto r = hio_gethostbyname(hostname, 12345, 15.msecs);
+            auto r = hio_gethostbyname(hostname, 12345, 3.msecs);
             debug(hioresolve) tracef("%s -> %s", hostname, r);
             return r;
         }
@@ -845,6 +1195,71 @@ unittest
         auto tasks = names.map!(n => task(&resolve, n)).array;
         tasks.each!(t => t.start);
         tasks.each!(t => t.wait);
+        return tasks.map!"a.result".array;
     });
     globalLogLevel = LogLevel.info;
+}
+
+unittest
+{
+    globalLogLevel = LogLevel.info;
+    info("=== Testing resolver INET6 ares/sync ===");
+    // auto r = resolver.gethostbyname6("ip6-localhost");
+    // assert(r.status == 0);
+    // debug(hioresolve) tracef("%s", r);
+    // r = resolver.gethostbyname6("8.8.8.8");
+    // assert(r.status == 0);
+    // debug(hioresolve) tracef("%s", r);
+    auto r = hio_gethostbyname6("dlang.org");
+    assert(r.status == 0);
+    tracef("%s", r);
+    r = hio_gethostbyname6(".......");
+    assert(r.status != 0);
+    tracef("status: %s", resolver_errno(r.status));
+    r = hio_gethostbyname6(".......");
+    assert(r.status != 0);
+    globalLogLevel = LogLevel.info;
+}
+unittest
+{
+    import std.array: array;
+    globalLogLevel = LogLevel.trace;
+    info("=== Testing resolver INET6 ares/async ===");
+    auto app(string hostname)
+    {
+        int status;
+        bool yielded;
+
+        Internet6Address[] addresses;
+        Fiber fiber = Fiber.getThis();
+
+        void cb(ResolverResult6 r) @trusted
+        {
+            status = r.status;
+            addresses = r.addresses.map!(a => cast(Internet6Address)a).array;
+            if (yielded)
+            {
+                fiber.call();
+            }
+        }
+        auto r = hio_gethostbyname6(hostname, &cb);
+        if (r.isEmpty)
+        {
+            yielded = true;
+            Fiber.yield();
+        }
+        return addresses;
+    }
+    auto names = ["dlang.org", "google.com", "cloudflare.com", ".."];
+    auto tasks = names.map!(n => task(&app, n)).array;
+    try
+    {
+        tasks.each!(t => t.start);
+        getDefaultLoop.run(2.seconds);
+        assert(tasks.all!(t => t.ready));
+    }
+    catch (Throwable e)
+    {
+        errorf("%s", e);
+    }
 }
