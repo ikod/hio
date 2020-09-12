@@ -128,6 +128,8 @@ struct NativeEventLoopImpl {
                 continue;
             }
             debug(hioepoll) tracef("execute overdue %s", t);
+            assert(t._armed);
+            t._armed = false;
             HandlerDelegate h = t._handler;
             try {
                 if (inshutdown)
@@ -371,6 +373,8 @@ struct NativeEventLoopImpl {
         {
             throw new LoopShutdownException("starting timer");
         }
+        assert(!t._armed);
+        t._armed = true;
         auto now = Clock.currTime;
         auto d = t._expires - now;
         d = max(d, 0.seconds);
@@ -379,8 +383,6 @@ struct NativeEventLoopImpl {
             debug(hioepoll) tracef("inserted overdue timer: %s", t);
             return;
         }
-        assert(!t._armed);
-        t._armed = true;
         ulong twNow = timingwheels.currStdTime(tick);
         Duration twdelay = (now.stdTime - twNow).hnsecs;
         debug(hioepoll) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);

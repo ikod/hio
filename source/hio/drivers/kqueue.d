@@ -368,6 +368,8 @@ struct NativeEventLoopImpl {
         {
             throw new LoopShutdownException("starting timer");
         }
+        assert(!t._armed);
+        t._armed = true;
         auto now = Clock.currTime;
         auto d = t._expires - now;
         d = max(d, 0.seconds);
@@ -375,8 +377,6 @@ struct NativeEventLoopImpl {
             overdue ~= t;
             return;
         }
-        assert(!t._armed);
-        t._armed = true;
         ulong twNow = timingwheels.currStdTime(tick);
         Duration twdelay = (now.stdTime - twNow).hnsecs;
         debug(hiokqueue) safe_tracef("tw delay: %s", (now.stdTime - twNow).hnsecs);
