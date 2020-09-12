@@ -578,6 +578,10 @@ package:
                 debug(hioresolve) tracef("select returned %d events %s, %s", count, readers, writers);
                 ares_process(theResolver._ares_channel, &readers, &writers);
             }
+            auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
+            debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+            // prepare listening for socket events
+            handleGetSocks(rc, &_sockets);
             return result;
         }
 
@@ -621,6 +625,10 @@ package:
                 debug(hioresolve) tracef("select returned %d events %s, %s", count, readers, writers);
                 ares_process(theResolver._ares_channel, &readers, &writers);
             }
+            auto rc = ares_getsock(_ares_channel, &_sockets[0], ARES_GETSOCK_MAXNUM);
+            debug(hioresolve) tracef("getsocks: 0x%04X, %s", rc, _sockets);
+            // prepare listening for socket events
+            handleGetSocks(rc, &_sockets);
             return result;
         }
 
@@ -1223,7 +1231,7 @@ unittest
 unittest
 {
     import std.array: array;
-    globalLogLevel = LogLevel.trace;
+    globalLogLevel = LogLevel.info;
     info("=== Testing resolver INET6 ares/async ===");
     auto app(string hostname)
     {
