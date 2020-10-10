@@ -23,11 +23,11 @@
     "configurations": [
         {
             "name": "library",
-	    "versions": ["openssl11"]
+            "versions": ["openssl11"]
         },
         {
             "name": "unittest",
-	    "versions": ["openssl11"],
+            "versions": ["openssl11"],
             "debugVersions": []
         }
     ],

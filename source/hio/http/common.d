@@ -9,7 +9,7 @@ import std.uni;
 import std.experimental.logger;
 
 import ikod.containers.hashmap: HashMap;
-import ikod.containers.compressedlist: CompressedList;
+import ikod.containers.unrolledlist: UnrolledList;
 import nbuff: SmartPtr, Nbuff, NbuffChunk, smart_ptr;
 
 import hio.http.http_parser;
@@ -330,7 +330,7 @@ package struct MessageHeader
     NbuffChunk  value;
 }
 
-alias MessageHeaders = CompressedList!MessageHeader;
+alias MessageHeaders = UnrolledList!MessageHeader;
 
 ushort standard_port(string schema) @safe
 {

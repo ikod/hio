@@ -22,7 +22,7 @@ public import hio.http.common;
 import hio.http.http_parser;
 
 import ikod.containers.hashmap: HashMap, hash_function;
-import ikod.containers.compressedlist;
+import ikod.containers.unrolledlist;
 
 import nbuff: Nbuff, NbuffChunk, SmartPtr;
 
@@ -597,7 +597,7 @@ struct AsyncHTTP
         }
         else
         {
-            _response_headers.insertBack(MessageHeader(field, value));
+            _response_headers.pushBack(MessageHeader(field, value));
         }
     }
 
@@ -806,7 +806,7 @@ struct AsyncHTTPResult
     MessageHeaders  response_headers;
     private
     {
-        HashMap!(string, NbuffChunk)    cached_headers;
+        HashMap!(string, NbuffChunk) cached_headers;
     }
     NbuffChunk getHeader(string h) @safe
     {
@@ -835,8 +835,8 @@ struct AsyncHTTPResult
 unittest
 {
     AsyncHTTPResult r;
-    r.response_headers.insertBack(MessageHeader(NbuffChunk("Abc"), NbuffChunk("abc")));
-    r.response_headers.insertBack(MessageHeader(NbuffChunk("Def"), NbuffChunk("bbb")));
+    r.response_headers.pushBack(MessageHeader(NbuffChunk("Abc"), NbuffChunk("abc")));
+    r.response_headers.pushBack(MessageHeader(NbuffChunk("Def"), NbuffChunk("bbb")));
     auto abc = r.getHeader("abc");
     assert(abc.data == "abc");
     abc = r.getHeader("abc");
